@@ -1,13 +1,41 @@
+import asyncio
 import dataclasses
+import hashlib
 import json
+import os
+import random
+import re
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import astrbot.api.message_components as Comp
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
+from astrbot.core.config import AstrBotConfig
 
+
+QQOFFICIAL_PLATFORMS = {"qq_official", "qq_official_webhook"}
+BOT_AT_MARKER = "qq_official"
+BOX_COMMAND_PATTERN = re.compile(r"^\s*盒\s+(\d+)\s*$")
+
+TENCENT_MAP_API_BASE = "https://apis.map.qq.com"
+TENCENT_MAP_PLACE_SEARCH_PATH = "/ws/place/v1/search"
+TENCENT_MAP_STATIC_PATH = "/ws/staticmap/v2/"
+DEFAULT_PLACE_KEYWORDS = [
+    "公园",
+    "商场",
+    "酒店",
+    "学校",
+    "医院",
+    "景点",
+    "美食",
+    "超市",
+]
 
 MAX_DUMP_DEPTH = 8
 MAX_TEXT_CHUNK_SIZE = 1800
@@ -31,6 +59,12 @@ SKIPPED_EVENT_FIELDS = {
     "span",
     "trace",
 }
+
+
+@dataclass(frozen=True)
+class GeneratedLocation:
+    address: str
+    map_url: str | None = None
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -238,25 +272,61 @@ def _chunk_text(text: str, size: int = MAX_TEXT_CHUNK_SIZE) -> list[str]:
     return [text[i : i + size] for i in range(0, len(text), size)] or [""]
 
 
-@register("helloworld", "YourName", "一个简单的 Hello World 插件", "1.0.0")
-class MyPlugin(Star):
-    def __init__(self, context: Context):
+@register(
+    "astrbot_plugin_util_official",
+    "Codex",
+    "QQOfficial 适配版虚拟开盒娱乐插件",
+    "1.1.1",
+)
+class QQOfficialUtilPlugin(Star):
+    def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
+        self.config = config or {}
+        self.location_data: dict = {}
+        self.location_pool: list[str] = []
+        self.search_region_pool: list[dict[str, str]] = []
+        self._load_location_data()
 
     async def initialize(self):
         pass
 
-    @filter.command("helloworld")
-    async def helloworld(self, event: AstrMessageEvent):
-        user_name = event.get_sender_name()
-        message_str = event.message_str
-        message_chain = event.get_messages()
-        logger.info(message_chain)
-        yield event.plain_result(f"Hello, {user_name}, 你发了 {message_str}!")
+    @filter.platform_adapter_type(
+        filter.PlatformAdapterType.QQOFFICIAL
+        | filter.PlatformAdapterType.QQOFFICIAL_WEBHOOK
+    )
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def qqofficial_box(self, event: AstrMessageEvent):
+        command_text = self._extract_box_command_text(event)
+        if command_text is None:
+            return
+
+        qq = self._parse_box_target(command_text)
+        if not qq:
+            if command_text.strip().startswith("盒"):
+                yield event.plain_result("格式错误，请使用：@机器人 盒 123456789")
+                event.stop_event()
+            return
+
+        sender_id = event.get_sender_id()
+        if sender_id and not self._is_user_allowed(str(sender_id)):
+            yield event.plain_result("当前账号未启用该功能")
+            event.stop_event()
+            return
+
+        yield event.plain_result(f"正在生成 {qq} 的虚拟信息...")
+        output_text, map_url = await self.generate_fake_dox(qq)
+        chain = [
+            Comp.Plain(output_text),
+            Comp.Image.fromURL(f"https://q4.qlogo.cn/headimg_dl?dst_uin={qq}&spec=640"),
+        ]
+        if map_url:
+            chain.append(Comp.Image.fromURL(map_url))
+        yield event.chain_result(chain)
+        event.stop_event()
 
     @filter.command("qqofficial_debug")
     async def qqofficial_debug(self, event: AstrMessageEvent):
-        if event.get_platform_name() not in {"qq_official", "qq_official_webhook"}:
+        if event.get_platform_name() not in QQOFFICIAL_PLATFORMS:
             yield event.plain_result(
                 f"Current platform is {event.get_platform_name()}, not qq_official/qq_official_webhook."
             )
@@ -273,6 +343,456 @@ class MyPlugin(Star):
             )
             result.use_markdown(False)
             yield result
+
+    def _extract_box_command_text(self, event: AstrMessageEvent) -> str | None:
+        if event.get_platform_name() not in QQOFFICIAL_PLATFORMS:
+            return None
+        if not self._starts_with_bot_mention(event):
+            return None
+        return event.get_message_str() or ""
+
+    def _starts_with_bot_mention(self, event: AstrMessageEvent) -> bool:
+        for component in event.get_messages():
+            if isinstance(component, Comp.Plain) and not component.text.strip():
+                continue
+            return self._is_bot_at(component, event)
+        return False
+
+    def _is_bot_at(self, component: Any, event: AstrMessageEvent) -> bool:
+        if not isinstance(component, Comp.At):
+            return False
+        mentioned_id = str(component.qq).strip()
+        if mentioned_id.lower() == BOT_AT_MARKER:
+            return True
+        return mentioned_id in self._get_bot_self_ids(event)
+
+    def _parse_box_target(self, command_text: str) -> str | None:
+        match = BOX_COMMAND_PATTERN.fullmatch(command_text)
+        if not match:
+            return None
+        qq = match.group(1).strip()
+        if not self._validate_qq(qq):
+            return None
+        return qq
+
+    async def generate_fake_dox(self, target_qq: str) -> tuple[str, str | None]:
+        location = await self._generate_location()
+        output = (
+            "身份检索完成\n"
+            f"账号：{target_qq}\n"
+            f"手机：{self._generate_phone()}\n"
+            f"IP地址：{self._generate_ip()}\n"
+            f"物理地址：{location.address}\n"
+            "说明：以上信息均为随机生成，仅供娱乐。"
+        )
+        return output, location.map_url
+
+    def _load_location_data(self) -> None:
+        data_path = Path(__file__).resolve().parent / "china_clean_v2.json"
+        try:
+            if not data_path.exists():
+                logger.warning(f"[QQOfficialUtil] 未找到地理位置文件：{data_path}")
+                return
+
+            with data_path.open("r", encoding="utf-8") as file:
+                self.location_data = json.load(file)
+
+            if not isinstance(self.location_data, dict):
+                logger.warning("[QQOfficialUtil] 地理位置数据格式无效，应为字典")
+                self.location_data = {}
+                return
+
+            self.location_pool = self._flatten_locations(self.location_data)
+            self.search_region_pool = self._flatten_search_regions(self.location_data)
+            logger.info(
+                f"[QQOfficialUtil] 已加载 {len(self.location_pool)} 条地理位置数据"
+            )
+        except json.JSONDecodeError as exc:
+            logger.error(f"[QQOfficialUtil] 解析地理位置 JSON 失败：{exc}")
+            self.location_data = {}
+            self.location_pool = []
+            self.search_region_pool = []
+        except Exception as exc:
+            logger.error(f"[QQOfficialUtil] 加载地理位置数据失败：{exc}")
+            self.location_data = {}
+            self.location_pool = []
+            self.search_region_pool = []
+
+    def _flatten_locations(self, data: dict) -> list[str]:
+        locations: list[str] = []
+        for provinces in data.values():
+            if not isinstance(provinces, dict):
+                continue
+
+            for province_name, cities in provinces.items():
+                if not isinstance(cities, dict):
+                    locations.append(str(province_name))
+                    continue
+
+                for city_name, districts in cities.items():
+                    if not isinstance(districts, dict) or not districts:
+                        locations.append(f"{province_name}{city_name}")
+                        continue
+
+                    for district_name, streets in districts.items():
+                        if not isinstance(streets, dict) or not streets:
+                            locations.append(
+                                f"{province_name}{city_name}{district_name}"
+                            )
+                            continue
+
+                        for street_name in streets.keys():
+                            locations.append(
+                                f"{province_name}{city_name}{district_name}{street_name}"
+                            )
+
+        return locations
+
+    def _flatten_search_regions(self, data: dict) -> list[dict[str, str]]:
+        regions: list[dict[str, str]] = []
+        for provinces in data.values():
+            if not isinstance(provinces, dict):
+                continue
+
+            for province_name, cities in provinces.items():
+                if not isinstance(cities, dict):
+                    continue
+
+                for city_name, districts in cities.items():
+                    if not isinstance(districts, dict) or not districts:
+                        regions.append(
+                            {
+                                "region": str(city_name),
+                                "prefix": f"{province_name}{city_name}",
+                            }
+                        )
+                        continue
+
+                    for district_name, streets in districts.items():
+                        street_name = self._pick_street_name(streets)
+                        prefix = f"{province_name}{city_name}{district_name}"
+                        if street_name:
+                            prefix += street_name
+                        regions.append(
+                            {
+                                "region": str(city_name),
+                                "prefix": prefix,
+                            }
+                        )
+
+        return regions
+
+    def _pick_street_name(self, streets: object) -> str:
+        if not isinstance(streets, dict) or not streets:
+            return ""
+        return str(random.choice(list(streets.keys())))
+
+    def _get_bot_self_ids(self, event: AstrMessageEvent) -> set[str]:
+        self_ids = {BOT_AT_MARKER}
+        raw_message = getattr(event.message_obj, "raw_message", None)
+        if isinstance(raw_message, dict):
+            self_id = raw_message.get("self_id")
+            if self_id:
+                self_ids.add(str(self_id))
+
+        message_self_id = getattr(event.message_obj, "self_id", None)
+        if message_self_id:
+            self_ids.add(str(message_self_id))
+
+        try:
+            self_id = event.get_self_id()
+        except Exception as exc:
+            logger.debug(f"[QQOfficialUtil] 读取 event.get_self_id 失败：{exc}")
+        else:
+            if self_id:
+                self_ids.add(str(self_id))
+        return self_ids
+
+    def _validate_qq(self, qq: str) -> bool:
+        if not qq or not isinstance(qq, str):
+            return False
+        if not qq.isdigit():
+            logger.warning(f"[QQOfficialUtil] 检测到无效 QQ 格式：{qq}")
+            return False
+        return True
+
+    def _is_user_allowed(self, user_id: str | None) -> bool:
+        if not user_id:
+            return True
+
+        mode = str(self.config.get("user_list_mode", "none")).lower()
+        if mode not in {"whitelist", "blacklist", "none"}:
+            mode = "none"
+        if mode == "none":
+            return True
+
+        user_list = {str(item) for item in self.config.get("user_list", [])}
+        is_in_list = str(user_id) in user_list
+        if mode == "whitelist":
+            return is_in_list
+        if mode == "blacklist":
+            return not is_in_list
+        return True
+
+    def _generate_phone(self) -> str:
+        prefixes = [
+            "130",
+            "131",
+            "132",
+            "133",
+            "135",
+            "136",
+            "137",
+            "138",
+            "139",
+            "150",
+            "151",
+            "152",
+            "155",
+            "156",
+            "157",
+            "158",
+            "159",
+            "166",
+            "177",
+            "180",
+            "181",
+            "182",
+            "183",
+            "184",
+            "185",
+            "186",
+            "187",
+            "188",
+            "189",
+            "198",
+            "199",
+        ]
+        prefix = random.choice(prefixes)
+        suffix = "".join(str(random.randint(0, 9)) for _ in range(8))
+        return f"{prefix}{suffix}"
+
+    def _generate_ip(self) -> str:
+        first = random.choice(
+            [
+                58,
+                61,
+                110,
+                112,
+                113,
+                114,
+                115,
+                116,
+                117,
+                118,
+                119,
+                120,
+                121,
+                122,
+                123,
+                124,
+                125,
+                126,
+                127,
+                172,
+                192,
+            ]
+        )
+        second = random.randint(1, 255)
+        third = random.randint(0, 255)
+        fourth = random.randint(1, 254)
+        return f"{first}.{second}.{third}.{fourth}"
+
+    async def _generate_location(self) -> GeneratedLocation:
+        if not self._is_map_enrichment_enabled():
+            return GeneratedLocation(self._generate_fallback_location())
+
+        api_key = self._get_tencent_map_key()
+        if not api_key:
+            logger.warning("[QQOfficialUtil] 已启用地图增强，但未配置 tencent_map_key")
+            return GeneratedLocation(self._generate_fallback_location())
+
+        region = self._pick_search_region()
+        if not region:
+            logger.warning("[QQOfficialUtil] 未加载到可搜索地区，回退本地随机地址")
+            return GeneratedLocation(self._generate_fallback_location())
+
+        poi = await self._search_random_poi(api_key, region["region"])
+        if not poi:
+            return GeneratedLocation(region["prefix"])
+
+        address = self._format_poi_address(region["prefix"], poi)
+        map_url = self._build_static_map_url(api_key, poi)
+        return GeneratedLocation(address, map_url)
+
+    def _generate_fallback_location(self) -> str:
+        if self.location_pool:
+            return random.choice(self.location_pool)
+        return "四川省成都市金牛区"
+
+    def _is_map_enrichment_enabled(self) -> bool:
+        return bool(self._get_map_config("enable_static_map", False))
+
+    def _get_tencent_map_key(self) -> str:
+        return str(
+            self._get_map_config("tencent_map_key", "")
+            or os.getenv("TENCENT_MAP_KEY")
+            or ""
+        ).strip()
+
+    def _get_tencent_map_sk(self) -> str:
+        return str(
+            self._get_map_config("tencent_map_sk", "")
+            or os.getenv("TENCENT_MAP_SK")
+            or ""
+        ).strip()
+
+    def _pick_search_region(self) -> dict[str, str] | None:
+        if not self.search_region_pool:
+            return None
+        return random.choice(self.search_region_pool)
+
+    async def _search_random_poi(
+        self, api_key: str, region_name: str
+    ) -> dict | None:
+        page_size = self._get_int_config("place_search_page_size", 10, 1, 20)
+        keywords = self._pick_place_keywords_for_search()
+        for keyword in keywords:
+            params = {
+                "key": api_key,
+                "keyword": keyword,
+                "boundary": f"region({region_name},1)",
+                "page_size": str(page_size),
+                "page_index": "1",
+                "output": "json",
+            }
+            url = self._build_tencent_get_url(TENCENT_MAP_PLACE_SEARCH_PATH, params)
+            try:
+                payload = await self._http_get_json(url)
+            except Exception as exc:
+                logger.warning(f"[QQOfficialUtil] 腾讯地图地点搜索失败：{exc}")
+                return None
+
+            if not isinstance(payload, dict) or payload.get("status") != 0:
+                logger.warning(
+                    "[QQOfficialUtil] 腾讯地图地点搜索返回异常："
+                    f"{self._summarize_api_payload(payload)}"
+                )
+                return None
+
+            pois = payload.get("data")
+            if not isinstance(pois, list) or not pois:
+                continue
+            valid_pois = [poi for poi in pois if isinstance(poi, dict)]
+            if valid_pois:
+                return random.choice(valid_pois)
+        return None
+
+    def _pick_place_keywords_for_search(self) -> list[str]:
+        keywords = self._get_map_config("place_search_keywords", DEFAULT_PLACE_KEYWORDS)
+        if not isinstance(keywords, list):
+            keywords = DEFAULT_PLACE_KEYWORDS
+        normalized = [str(item).strip() for item in keywords if str(item).strip()]
+        if not normalized:
+            normalized = DEFAULT_PLACE_KEYWORDS
+        random.shuffle(normalized)
+        retry_count = self._get_int_config(
+            "place_search_retry_keywords", 4, 1, len(normalized)
+        )
+        return normalized[:retry_count]
+
+    async def _http_get_json(self, url: str) -> dict:
+        timeout = self._get_int_config("tencent_api_timeout", 5, 1, 30)
+
+        def _request() -> dict:
+            request = urllib.request.Request(
+                url,
+                headers={"User-Agent": "astrbot-plugin-util-official/1.1"},
+            )
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                charset = response.headers.get_content_charset() or "utf-8"
+                body = response.read().decode(charset)
+            return json.loads(body)
+
+        return await asyncio.to_thread(_request)
+
+    def _format_poi_address(self, region_prefix: str, poi: dict) -> str:
+        title = str(poi.get("title") or "").strip()
+        address = str(poi.get("address") or "").strip()
+        if address and title:
+            return f"{address}（{title}）"
+        if title:
+            return f"{region_prefix}{title}"
+        return address or region_prefix
+
+    def _build_static_map_url(self, api_key: str, poi: dict) -> str | None:
+        location = poi.get("location")
+        if not isinstance(location, dict):
+            return None
+        lat = location.get("lat")
+        lng = location.get("lng")
+        if lat is None or lng is None:
+            return None
+
+        zoom = self._get_int_config("static_map_zoom", 17, 4, 18)
+        size = str(self._get_map_config("static_map_size", "500x400")).strip() or "500x400"
+        marker_style = (
+            str(self._get_map_config("static_map_marker_style", "size:large|color:red"))
+            .strip()
+            .strip("|")
+        )
+        params = {
+            "key": api_key,
+            "center": f"{lat},{lng}",
+            "zoom": str(zoom),
+            "size": size,
+        }
+        if marker_style:
+            params["markers"] = f"{marker_style}|{lat},{lng}"
+        return self._build_tencent_get_url(TENCENT_MAP_STATIC_PATH, params)
+
+    def _build_tencent_get_url(self, path: str, params: dict[str, str]) -> str:
+        request_params = dict(params)
+        secret_key = self._get_tencent_map_sk()
+        if secret_key:
+            request_params["sig"] = self._sign_tencent_get(path, params, secret_key)
+        query = urllib.parse.urlencode(request_params)
+        return f"{TENCENT_MAP_API_BASE}{path}?{query}"
+
+    def _sign_tencent_get(
+        self, path: str, params: dict[str, str], secret_key: str
+    ) -> str:
+        raw_query = "&".join(f"{key}={params[key]}" for key in sorted(params.keys()))
+        source = f"{path}?{raw_query}{secret_key}"
+        return hashlib.md5(source.encode("utf-8")).hexdigest()
+
+    def _get_map_config(self, key: str, default=None):
+        tencent_map = self.config.get("tencent_map", {})
+        if hasattr(tencent_map, "get"):
+            value = tencent_map.get(key, None)
+            if value is not None:
+                return value
+        return self.config.get(key, default)
+
+    def _summarize_api_payload(self, payload) -> str:
+        if not isinstance(payload, dict):
+            return repr(payload)[:300]
+        summary = {
+            "status": payload.get("status"),
+            "message": payload.get("message"),
+            "count": payload.get("count"),
+            "request_id": payload.get("request_id"),
+        }
+        return json.dumps(summary, ensure_ascii=False)
+
+    def _get_int_config(
+        self, key: str, default: int, minimum: int, maximum: int
+    ) -> int:
+        try:
+            value = int(self._get_map_config(key, default))
+        except (TypeError, ValueError):
+            return default
+        return max(minimum, min(maximum, value))
 
     async def terminate(self):
         pass

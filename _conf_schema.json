@@ -1,0 +1,101 @@
+{
+  "user_list_mode": {
+    "description": "主动指令账号过滤模式",
+    "type": "string",
+    "options": [
+      "whitelist",
+      "blacklist",
+      "none"
+    ],
+    "default": "none",
+    "hint": "whitelist: 仅允许列表内账号使用；blacklist: 拒绝列表内账号使用；none: 不限制。QQOfficial 无法提供真实 QQ 号，这里匹配的是 sender openid/member_openid。"
+  },
+  "user_list": {
+    "type": "list",
+    "description": "主动指令账号白名单/黑名单",
+    "default": [],
+    "hint": "填写 QQOfficial 事件里的 sender_id/member_openid/openid，不是 QQ 号。可用 @机器人 qqofficial_debug 查看实际值。",
+    "items": {
+      "type": "string"
+    }
+  },
+  "tencent_map": {
+    "description": "腾讯地图地点搜索与静态地图增强",
+    "type": "object",
+    "hint": "可选功能。未配置 Key 或接口失败时会自动回退到本地随机地址。",
+    "items": {
+      "enable_static_map": {
+        "description": "启用腾讯地图地点搜索与静态地图增强",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后会先随机生成地区，再调用腾讯位置服务搜索真实 POI，并附加静态地图图片。"
+      },
+      "tencent_map_key": {
+        "description": "腾讯位置服务 WebService API Key",
+        "type": "string",
+        "default": "",
+        "hint": "也可通过环境变量 TENCENT_MAP_KEY 提供。"
+      },
+      "tencent_map_sk": {
+        "description": "腾讯位置服务 SecretKey（可选）",
+        "type": "string",
+        "default": "",
+        "hint": "仅在 Key 开启 SN 校验时填写；也可通过环境变量 TENCENT_MAP_SK 提供。"
+      },
+      "place_search_keywords": {
+        "description": "随机地点搜索关键词列表",
+        "type": "list",
+        "default": [
+          "公园",
+          "商场",
+          "酒店",
+          "学校",
+          "医院",
+          "景点",
+          "美食",
+          "超市"
+        ],
+        "hint": "每次会从列表中随机选择关键词，在随机城市内搜索地点。",
+        "items": {
+          "type": "string"
+        }
+      },
+      "place_search_retry_keywords": {
+        "description": "地点搜索关键词重试数量",
+        "type": "int",
+        "default": 4,
+        "hint": "同一地区下关键词无结果时，会继续尝试其它关键词。"
+      },
+      "place_search_page_size": {
+        "description": "地点搜索候选数量",
+        "type": "int",
+        "default": 10,
+        "hint": "每次搜索返回的候选 POI 数量，范围 1-20。"
+      },
+      "static_map_zoom": {
+        "description": "静态地图缩放级别",
+        "type": "int",
+        "default": 17,
+        "hint": "腾讯静态图缩放级别，范围 4-18。"
+      },
+      "static_map_size": {
+        "description": "静态地图图片尺寸",
+        "type": "string",
+        "default": "500x400",
+        "hint": "格式为 宽x高，例如 500x400。"
+      },
+      "static_map_marker_style": {
+        "description": "静态地图位置标记样式",
+        "type": "string",
+        "default": "size:large|color:red",
+        "hint": "会拼接为 markers=<样式>|纬度,经度；留空则不添加位置标记。"
+      },
+      "tencent_api_timeout": {
+        "description": "腾讯地图接口超时时间",
+        "type": "int",
+        "default": 5,
+        "hint": "单位秒，范围 1-30。"
+      }
+    }
+  }
+}
