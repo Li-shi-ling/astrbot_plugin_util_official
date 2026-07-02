@@ -2,7 +2,7 @@
 
 QQOfficial 适配版娱乐工具插件。当前主功能移植自 NullDox 的“虚拟开盒”效果，但只保留 QQOfficial 能稳定支持的入口和数据。
 
-当前版本：v1.1.1
+当前版本：v1.1.3
 
 ## 使用方式
 
@@ -48,6 +48,14 @@ QQOfficial 适配版娱乐工具插件。当前主功能移植自 NullDox 的“
 ```
 
 可以让 bot 输出当前 `QQOfficialWebhookMessageEvent` / `QQOfficialMessageEvent` 中能序列化的数据，便于查看实际 openid、message chain、raw message 等字段。
+
+发送：
+
+```text
+@机器人 qqofficial_buttons
+```
+
+可以触发一条 QQOfficial Markdown 按钮组件消息。按钮消息会使用当前消息的 `msg_id` 作为被动回复上下文，避免被平台当作无权限的主动群消息。
 
 ## 配置
 

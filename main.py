@@ -190,6 +190,39 @@ def _build_button_reply_text(button_id: str | None, button_data: str | None) -> 
     return f"你按了 {_button_display_text(button_id, button_data)}"
 
 
+def _first_non_empty_str(*values: Any) -> str | None:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value)
+        if text:
+            return text
+    return None
+
+
+def _extract_message_reference_id(raw_message: Any, message_obj: Any) -> str | None:
+    return _first_non_empty_str(
+        getattr(raw_message, "id", None),
+        getattr(message_obj, "message_id", None),
+    )
+
+
+def _add_passive_reply_context(
+    payload: dict[str, Any],
+    *,
+    msg_id: str | None = None,
+    event_id: str | None = None,
+    msg_seq: int | None = None,
+) -> dict[str, Any]:
+    if msg_id:
+        payload["msg_id"] = msg_id
+    elif event_id:
+        payload["event_id"] = event_id
+    if payload.get("msg_id") or payload.get("event_id"):
+        payload["msg_seq"] = msg_seq if msg_seq is not None else random.randint(1, 10000)
+    return payload
+
+
 def _extract_interaction_context(raw_event: Any) -> QQOfficialInteractionContext | None:
     if raw_event is None:
         return None
@@ -530,6 +563,7 @@ class QQOfficialUtilPlugin(Star):
         payload = _build_button_reply_payload(text)
         raw_scene = (context.scene or "").lower()
         try:
+            _add_passive_reply_context(payload, event_id=context.interaction_id)
             if raw_scene == "group" and context.group_openid:
                 await platform.client.api.post_group_message(
                     group_openid=context.group_openid,
@@ -614,6 +648,11 @@ class QQOfficialUtilPlugin(Star):
             return
 
         payload = _build_button_message_payload()
+        _add_passive_reply_context(
+            payload,
+            msg_id=_extract_message_reference_id(raw_message, event.message_obj),
+            msg_seq=getattr(raw_message, "msg_seq", None),
+        )
         try:
             if isinstance(raw_message, botpy_message.GroupMessage):
                 await event.bot.api.post_group_message(

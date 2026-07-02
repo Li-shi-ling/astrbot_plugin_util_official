@@ -1,5 +1,10 @@
 # 更新日志
 
+## v1.1.3
+
+- 修复 `qqofficial_buttons` 发送按钮组件时被识别为主动群消息导致无权限的问题。
+- 按钮组件发送会携带原始消息 `msg_id` 和 `msg_seq`，按钮回调回复会携带 `event_id`，优先走 QQOfficial 被动回复路径。
+
 ## v1.1.1
 
 - 适配 QQOfficial 群聊触发方式：仅支持 `@机器人 盒 QQ号`。
