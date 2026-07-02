@@ -12,16 +12,37 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import botpy.message as botpy_message
+from botpy.interaction import Interaction
+from botpy.types import inline as qinline
+from botpy.types.message import MarkdownPayload
+
 import astrbot.api.message_components as Comp
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 from astrbot.core.config import AstrBotConfig
 
-
 QQOFFICIAL_PLATFORMS = {"qq_official", "qq_official_webhook"}
+QQOFFICIAL_MESSAGE_EVENT_NAMES = {
+    "QQOfficialMessageEvent",
+    "QQOfficialWebhookMessageEvent",
+}
+QQOFFICIAL_MESSAGE_EVENT_MODULE_PREFIXES = (
+    "astrbot.core.platform.sources.qqofficial.",
+    "astrbot.core.platform.sources.qqofficial_webhook.",
+)
 BOT_AT_MARKER = "qq_official"
 BOX_COMMAND_PATTERN = re.compile(r"^\s*盒\s+(\d+)\s*$")
+BUTTON_A_ID = "qqofficial_btn_a"
+BUTTON_B_ID = "qqofficial_btn_b"
+BUTTON_A_DATA = "button_a"
+BUTTON_B_DATA = "button_b"
+BUTTON_PROMPT = "请选择一个按钮"
+BUTTON_A_LABEL = "按钮 A"
+BUTTON_B_LABEL = "按钮 B"
+BUTTON_A_VISITED_LABEL = "已按下 A"
+BUTTON_B_VISITED_LABEL = "已按下 B"
 
 TENCENT_MAP_API_BASE = "https://apis.map.qq.com"
 TENCENT_MAP_PLACE_SEARCH_PATH = "/ws/place/v1/search"
@@ -65,6 +86,163 @@ SKIPPED_EVENT_FIELDS = {
 class GeneratedLocation:
     address: str
     map_url: str | None = None
+
+
+@dataclass(frozen=True)
+class QQOfficialButtonSpec:
+    button_id: str
+    label: str
+    visited_label: str
+    data: str
+
+
+@dataclass(frozen=True)
+class QQOfficialInteractionContext:
+    interaction_id: str
+    scene: str | None
+    chat_type: int | None
+    user_openid: str | None = None
+    group_openid: str | None = None
+    group_member_openid: str | None = None
+    guild_id: str | None = None
+    channel_id: str | None = None
+    button_id: str | None = None
+    button_data: str | None = None
+    message_id: str | None = None
+
+
+def _build_button_keyboard() -> qinline.Keyboard:
+    return {
+        "rows": [
+            {
+                "buttons": [
+                    _build_button_payload(
+                        QQOfficialButtonSpec(
+                            button_id=BUTTON_A_ID,
+                            label=BUTTON_A_LABEL,
+                            visited_label=BUTTON_A_VISITED_LABEL,
+                            data=BUTTON_A_DATA,
+                        )
+                    ),
+                    _build_button_payload(
+                        QQOfficialButtonSpec(
+                            button_id=BUTTON_B_ID,
+                            label=BUTTON_B_LABEL,
+                            visited_label=BUTTON_B_VISITED_LABEL,
+                            data=BUTTON_B_DATA,
+                        )
+                    ),
+                ]
+            }
+        ]
+    }
+
+
+def _build_button_payload(spec: QQOfficialButtonSpec) -> qinline.Button:
+    return {
+        "id": spec.button_id,
+        "render_data": {
+            "label": spec.label,
+            "visited_label": spec.visited_label,
+            "style": 1,
+        },
+        "action": {
+            "type": 1,
+            "permission": {
+                "type": 2,
+                "specify_user_ids": [],
+                "specify_role_ids": [],
+            },
+            "click_limit": 0,
+            "data": spec.data,
+            "at_bot_show_channel_list": False,
+            "unsupport_tips": "当前客户端不支持该按钮",
+        },
+    }
+
+
+def _button_display_text(button_id: str | None, button_data: str | None) -> str:
+    if button_id == BUTTON_A_ID or button_data == BUTTON_A_DATA:
+        return "A"
+    if button_id == BUTTON_B_ID or button_data == BUTTON_B_DATA:
+        return "B"
+    return "未知"
+
+
+def _build_button_message_payload() -> dict[str, Any]:
+    return {
+        "msg_type": 2,
+        "markdown": MarkdownPayload(content=BUTTON_PROMPT),
+        "keyboard": _build_button_keyboard(),
+    }
+
+
+def _build_button_reply_payload(text: str) -> dict[str, Any]:
+    return {
+        "content": text,
+        "msg_type": 0,
+        "markdown": None,
+        "keyboard": None,
+    }
+
+
+def _build_button_reply_text(button_id: str | None, button_data: str | None) -> str:
+    return f"你按了 {_button_display_text(button_id, button_data)}"
+
+
+def _extract_interaction_context(raw_event: Any) -> QQOfficialInteractionContext | None:
+    if raw_event is None:
+        return None
+
+    interaction: Any
+    if isinstance(raw_event, Interaction):
+        interaction = raw_event
+    else:
+        interaction = raw_event
+
+    data = getattr(interaction, "data", None)
+    resolved = getattr(data, "resolved", None)
+    button_id = getattr(resolved, "button_id", None)
+    button_data = getattr(resolved, "button_data", None)
+    message_id = getattr(resolved, "message_id", None)
+    return QQOfficialInteractionContext(
+        interaction_id=str(getattr(interaction, "id", "") or ""),
+        scene=getattr(interaction, "scene", None),
+        chat_type=getattr(interaction, "chat_type", None),
+        user_openid=getattr(interaction, "user_openid", None),
+        group_openid=getattr(interaction, "group_openid", None),
+        group_member_openid=getattr(interaction, "group_member_openid", None),
+        guild_id=getattr(interaction, "guild_id", None),
+        channel_id=getattr(interaction, "channel_id", None),
+        button_id=str(button_id) if button_id is not None else None,
+        button_data=str(button_data) if button_data is not None else None,
+        message_id=str(message_id) if message_id is not None else None,
+    )
+
+
+def _interaction_to_debug_dict(context: QQOfficialInteractionContext) -> dict[str, Any]:
+    return {
+        "interaction_id": context.interaction_id,
+        "scene": context.scene,
+        "chat_type": context.chat_type,
+        "user_openid": context.user_openid,
+        "group_openid": context.group_openid,
+        "group_member_openid": context.group_member_openid,
+        "guild_id": context.guild_id,
+        "channel_id": context.channel_id,
+        "button_id": context.button_id,
+        "button_data": context.button_data,
+        "message_id": context.message_id,
+    }
+
+
+def _is_qqofficial_message_event(event: AstrMessageEvent) -> bool:
+    event_type = type(event)
+    module_name = event_type.__module__.lower()
+    return (
+        event_type.__name__ in QQOFFICIAL_MESSAGE_EVENT_NAMES
+        and module_name.startswith(QQOFFICIAL_MESSAGE_EVENT_MODULE_PREFIXES)
+    )
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -285,10 +463,90 @@ class QQOfficialUtilPlugin(Star):
         self.location_data: dict = {}
         self.location_pool: list[str] = []
         self.search_region_pool: list[dict[str, str]] = []
+        self._interaction_hook_installed = False
         self._load_location_data()
 
     async def initialize(self):
-        pass
+        self._install_interaction_hook()
+
+    @filter.on_platform_loaded()
+    async def _on_platform_loaded(self):
+        self._install_interaction_hook()
+
+    def _install_interaction_hook(self) -> None:
+        patched = False
+        for platform in self.context.platform_manager.platform_insts:
+            if platform.meta().name not in QQOFFICIAL_PLATFORMS:
+                continue
+            client = getattr(platform, "client", None)
+            if client is None:
+                continue
+            if self._patch_qqofficial_client(platform, client):
+                patched = True
+        if patched:
+            self._interaction_hook_installed = True
+
+    def _patch_qqofficial_client(self, platform: Any, client: Any) -> bool:
+        if getattr(client, "_codex_button_hook_installed", False):
+            return False
+
+        plugin = self
+        original = getattr(client, "on_interaction_create", None)
+
+        async def on_interaction_create(interaction: Interaction):
+            await plugin._handle_qqofficial_interaction(platform, interaction)
+            if original and original is not on_interaction_create:
+                maybe = original(interaction)
+                if asyncio.iscoroutine(maybe):
+                    await maybe
+
+        client.on_interaction_create = on_interaction_create
+        client._codex_button_hook_installed = True
+        return True
+
+    async def _handle_qqofficial_interaction(
+        self,
+        platform: Any,
+        interaction: Interaction,
+    ) -> None:
+        context = _extract_interaction_context(interaction)
+        if not context or not context.interaction_id:
+            return
+        if context.button_id not in {BUTTON_A_ID, BUTTON_B_ID} and context.button_data not in {
+            BUTTON_A_DATA,
+            BUTTON_B_DATA,
+        }:
+            return
+
+        try:
+            await platform.client.api.on_interaction_result(context.interaction_id, 0)
+        except Exception as exc:
+            logger.warning(f"[QQOfficialUtil] interaction ACK 失败: {exc}")
+
+        await self._reply_button_press(platform, context)
+
+    async def _reply_button_press(self, platform: Any, context: QQOfficialInteractionContext) -> None:
+        text = _build_button_reply_text(context.button_id, context.button_data)
+        payload = _build_button_reply_payload(text)
+        raw_scene = (context.scene or "").lower()
+        try:
+            if raw_scene == "group" and context.group_openid:
+                await platform.client.api.post_group_message(
+                    group_openid=context.group_openid,
+                    **payload,
+                )
+                return
+            if raw_scene == "c2c" and context.user_openid:
+                await platform.client.api.post_c2c_message(
+                    openid=context.user_openid,
+                    **payload,
+                )
+                return
+            logger.warning(
+                f"[QQOfficialUtil] 按钮回调场景不受支持: scene={context.scene!r}, chat_type={context.chat_type!r}"
+            )
+        except Exception as exc:
+            logger.warning(f"[QQOfficialUtil] 回复按钮回调失败: {exc}")
 
     @filter.platform_adapter_type(
         filter.PlatformAdapterType.QQOFFICIAL
@@ -326,9 +584,9 @@ class QQOfficialUtilPlugin(Star):
 
     @filter.command("qqofficial_debug")
     async def qqofficial_debug(self, event: AstrMessageEvent):
-        if event.get_platform_name() not in QQOFFICIAL_PLATFORMS:
+        if not _is_qqofficial_message_event(event):
             yield event.plain_result(
-                f"Current platform is {event.get_platform_name()}, not qq_official/qq_official_webhook."
+                "该指令仅支持 QQOfficialMessageEvent / QQOfficialWebhookMessageEvent。"
             )
             return
 
@@ -343,6 +601,41 @@ class QQOfficialUtilPlugin(Star):
             )
             result.use_markdown(False)
             yield result
+
+    @filter.command("qqofficial_buttons")
+    async def qqofficial_buttons(self, event: AstrMessageEvent):
+        if not _is_qqofficial_message_event(event):
+            yield event.plain_result("该指令仅支持 QQOfficialMessageEvent / QQOfficialWebhookMessageEvent。")
+            return
+
+        raw_message = getattr(event.message_obj, "raw_message", None)
+        if raw_message is None:
+            yield event.plain_result("未找到 QQOfficial 原始消息对象，无法发送按钮。")
+            return
+
+        payload = _build_button_message_payload()
+        try:
+            if isinstance(raw_message, botpy_message.GroupMessage):
+                await event.bot.api.post_group_message(
+                    group_openid=raw_message.group_openid,
+                    **payload,
+                )
+            elif isinstance(raw_message, botpy_message.C2CMessage):
+                await event.bot.api.post_c2c_message(
+                    openid=raw_message.author.user_openid,
+                    **payload,
+                )
+            else:
+                yield event.plain_result(
+                    "该指令仅支持群聊和 C2C 消息类型。"
+                )
+                return
+        except Exception as exc:
+            logger.exception(f"[QQOfficialUtil] 发送按钮消息失败: {exc}")
+            yield event.plain_result(f"发送按钮消息失败：{exc}")
+            return
+
+        event.stop_event()
 
     def _extract_box_command_text(self, event: AstrMessageEvent) -> str | None:
         if event.get_platform_name() not in QQOFFICIAL_PLATFORMS:
