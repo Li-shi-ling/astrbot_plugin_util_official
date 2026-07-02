@@ -1,5 +1,10 @@
 # 更新日志
 
+## v1.1.7
+
+- 将 `qqofficial_buttons` 的 A/B 按钮改为 QQOfficial 指令按钮，点击后生成 `qqofficial_button_a` / `qqofficial_button_b` 命令，避免回调按钮依赖 `INTERACTION_CREATE` 导致请求超时。
+- 新增 `qqofficial_button_a` 和 `qqofficial_button_b` 指令，分别回复“你按了 A/B”。
+
 ## v1.1.6
 
 - 修复按钮点击后无响应的回调接收链路：发送按钮前兜底安装当前 QQOfficial client 的 `on_interaction_create` hook，并补充 `INTERACTION_CREATE` 所需的 interaction intent。

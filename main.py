@@ -37,8 +37,8 @@ BOT_AT_MARKER = "qq_official"
 BOX_COMMAND_PATTERN = re.compile(r"^\s*盒\s+(\d+)\s*$")
 BUTTON_A_ID = "qqofficial_btn_a"
 BUTTON_B_ID = "qqofficial_btn_b"
-BUTTON_A_DATA = "button_a"
-BUTTON_B_DATA = "button_b"
+BUTTON_A_DATA = "qqofficial_button_a"
+BUTTON_B_DATA = "qqofficial_button_b"
 BUTTON_PROMPT = "请选择一个按钮"
 BUTTON_A_LABEL = "按钮 A"
 BUTTON_B_LABEL = "按钮 B"
@@ -160,15 +160,13 @@ def _build_button_payload(spec: QQOfficialButtonSpec) -> qinline.Button:
             "style": 1,
         },
         "action": {
-            "type": 1,
+            "type": 2,
             "permission": {
                 "type": 2,
-                "specify_user_ids": [],
-                "specify_role_ids": [],
             },
-            "click_limit": 0,
             "data": spec.data,
-            "at_bot_show_channel_list": False,
+            "reply": True,
+            "enter": False,
             "unsupport_tips": "当前客户端不支持该按钮",
         },
     }
@@ -843,6 +841,28 @@ class QQOfficialUtilPlugin(Star):
             return
 
         logger.info("[QQOfficialUtil] qqofficial_buttons 发送流程结束，停止事件传播。")
+        event.stop_event()
+
+    @filter.command("qqofficial_button_a")
+    async def qqofficial_button_a(self, event: AstrMessageEvent):
+        logger.info(
+            "[QQOfficialUtil] qqofficial_button_a 触发: event_class=%s.%s, platform=%r",
+            type(event).__module__,
+            type(event).__name__,
+            event.get_platform_name() if hasattr(event, "get_platform_name") else None,
+        )
+        yield event.plain_result("你按了 A")
+        event.stop_event()
+
+    @filter.command("qqofficial_button_b")
+    async def qqofficial_button_b(self, event: AstrMessageEvent):
+        logger.info(
+            "[QQOfficialUtil] qqofficial_button_b 触发: event_class=%s.%s, platform=%r",
+            type(event).__module__,
+            type(event).__name__,
+            event.get_platform_name() if hasattr(event, "get_platform_name") else None,
+        )
+        yield event.plain_result("你按了 B")
         event.stop_event()
 
     def _extract_box_command_text(self, event: AstrMessageEvent) -> str | None:

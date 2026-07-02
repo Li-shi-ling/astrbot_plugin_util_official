@@ -2,7 +2,7 @@
 
 QQOfficial 适配版娱乐工具插件。当前主功能移植自 NullDox 的“虚拟开盒”效果，但只保留 QQOfficial 能稳定支持的入口和数据。
 
-当前版本：v1.1.6
+当前版本：v1.1.7
 
 ## 使用方式
 
@@ -57,7 +57,7 @@ QQOfficial 适配版娱乐工具插件。当前主功能移植自 NullDox 的“
 
 可以触发一条 QQOfficial Markdown 按钮组件消息。按钮消息会使用当前消息的 `msg_id` 作为被动回复上下文，避免被平台当作无权限的主动群消息。
 
-按钮点击回调依赖 QQOfficial 的 `INTERACTION_CREATE` 事件。插件会自动尝试补充 interaction intent 并安装回调 hook；如果是在机器人 websocket 已连接后更新插件，需要重启/重连 QQOfficial 平台后点击回调才会下发。
+当前 A/B 按钮使用 QQOfficial 指令按钮，不依赖 `INTERACTION_CREATE` 回调。点击后会生成 `qqofficial_button_a` / `qqofficial_button_b` 指令，再由插件回复“你按了 A/B”。
 
 ## 配置
 

@@ -42,6 +42,9 @@ class FakeQQOfficialMessageEvent:
     def plain_result(self, text):
         return text
 
+    def stop_event(self):
+        self.stopped = True
+
 
 class FakeQQOfficialWebhookMessageEvent(FakeQQOfficialMessageEvent):
     pass
@@ -102,7 +105,7 @@ def _collect_async_gen(async_gen):
     return asyncio.run(_runner())
 
 
-def test_button_keyboard_has_two_callback_buttons():
+def test_button_keyboard_has_two_command_buttons():
     module = load_plugin_module()
 
     keyboard = module._build_button_keyboard()
@@ -112,10 +115,14 @@ def test_button_keyboard_has_two_callback_buttons():
     assert len(keyboard["content"]["rows"]) == 1
     buttons = keyboard["content"]["rows"][0]["buttons"]
     assert len(buttons) == 2
-    assert buttons[0]["action"]["type"] == 1
-    assert buttons[1]["action"]["type"] == 1
-    assert buttons[0]["action"]["data"] == "button_a"
-    assert buttons[1]["action"]["data"] == "button_b"
+    assert buttons[0]["action"]["type"] == 2
+    assert buttons[1]["action"]["type"] == 2
+    assert buttons[0]["action"]["data"] == "qqofficial_button_a"
+    assert buttons[1]["action"]["data"] == "qqofficial_button_b"
+    assert buttons[0]["action"]["reply"] is True
+    assert buttons[1]["action"]["reply"] is True
+    assert buttons[0]["action"]["enter"] is False
+    assert buttons[1]["action"]["enter"] is False
     assert payload["msg_type"] == 2
     assert payload["markdown"]["content"] == module.BUTTON_PROMPT
     assert payload["keyboard"]["content"]["rows"][0]["buttons"][0]["id"] == module.BUTTON_A_ID
@@ -216,6 +223,21 @@ def test_button_command_sends_only_group_or_c2c(monkeypatch):
     assert c2c_api.calls[0][1]["keyboard"] == module._build_button_keyboard()
     assert getattr(group_event, "stopped", False) is True
     assert getattr(c2c_event, "stopped", False) is True
+
+
+def test_command_buttons_reply_with_pressed_button():
+    module = load_plugin_module()
+    plugin = object.__new__(module.QQOfficialUtilPlugin)
+    event_a = FakeQQOfficialMessageEvent(module)
+    event_b = FakeQQOfficialMessageEvent(module)
+
+    result_a = _collect_async_gen(plugin.qqofficial_button_a(event_a))
+    result_b = _collect_async_gen(plugin.qqofficial_button_b(event_b))
+
+    assert result_a == ["你按了 A"]
+    assert result_b == ["你按了 B"]
+    assert getattr(event_a, "stopped", False) is True
+    assert getattr(event_b, "stopped", False) is True
 
 
 def test_button_callback_reply_uses_interaction_event_id(monkeypatch):
