@@ -39,11 +39,20 @@ BUTTON_A_ID = "qqofficial_btn_a"
 BUTTON_B_ID = "qqofficial_btn_b"
 BUTTON_A_DATA = "qqofficial_button_a"
 BUTTON_B_DATA = "qqofficial_button_b"
+CALLBACK_BUTTON_A_ID = "qqofficial_callback_btn_a"
+CALLBACK_BUTTON_B_ID = "qqofficial_callback_btn_b"
+CALLBACK_BUTTON_A_DATA = "callback_button_a"
+CALLBACK_BUTTON_B_DATA = "callback_button_b"
 BUTTON_PROMPT = "请选择一个按钮"
+CALLBACK_BUTTON_PROMPT = "请选择一个回调按钮"
 BUTTON_A_LABEL = "按钮 A"
 BUTTON_B_LABEL = "按钮 B"
+CALLBACK_BUTTON_A_LABEL = "回调 A"
+CALLBACK_BUTTON_B_LABEL = "回调 B"
 BUTTON_A_VISITED_LABEL = "已按下 A"
 BUTTON_B_VISITED_LABEL = "已按下 B"
+CALLBACK_BUTTON_A_VISITED_LABEL = "已回调 A"
+CALLBACK_BUTTON_B_VISITED_LABEL = "已回调 B"
 QQOFFICIAL_INTERACTION_INTENT = 1 << 26
 
 TENCENT_MAP_API_BASE = "https://apis.map.qq.com"
@@ -172,10 +181,68 @@ def _build_button_payload(spec: QQOfficialButtonSpec) -> qinline.Button:
     }
 
 
+def _build_callback_button_keyboard() -> qinline.Keyboard:
+    return {
+        "content": {
+            "rows": [
+                {
+                    "buttons": [
+                        _build_callback_button_payload(
+                            QQOfficialButtonSpec(
+                                button_id=CALLBACK_BUTTON_A_ID,
+                                label=CALLBACK_BUTTON_A_LABEL,
+                                visited_label=CALLBACK_BUTTON_A_VISITED_LABEL,
+                                data=CALLBACK_BUTTON_A_DATA,
+                            )
+                        ),
+                        _build_callback_button_payload(
+                            QQOfficialButtonSpec(
+                                button_id=CALLBACK_BUTTON_B_ID,
+                                label=CALLBACK_BUTTON_B_LABEL,
+                                visited_label=CALLBACK_BUTTON_B_VISITED_LABEL,
+                                data=CALLBACK_BUTTON_B_DATA,
+                            )
+                        ),
+                    ]
+                }
+            ]
+        }
+    }
+
+
+def _build_callback_button_payload(spec: QQOfficialButtonSpec) -> qinline.Button:
+    return {
+        "id": spec.button_id,
+        "render_data": {
+            "label": spec.label,
+            "visited_label": spec.visited_label,
+            "style": 1,
+        },
+        "action": {
+            "type": 1,
+            "permission": {
+                "type": 2,
+                "specify_user_ids": [],
+                "specify_role_ids": [],
+            },
+            "data": spec.data,
+            "click_limit": 0,
+            "at_bot_show_channel_list": False,
+            "unsupport_tips": "当前客户端不支持该按钮",
+        },
+    }
+
+
 def _button_display_text(button_id: str | None, button_data: str | None) -> str:
-    if button_id == BUTTON_A_ID or button_data == BUTTON_A_DATA:
+    if button_id in {BUTTON_A_ID, CALLBACK_BUTTON_A_ID} or button_data in {
+        BUTTON_A_DATA,
+        CALLBACK_BUTTON_A_DATA,
+    }:
         return "A"
-    if button_id == BUTTON_B_ID or button_data == BUTTON_B_DATA:
+    if button_id in {BUTTON_B_ID, CALLBACK_BUTTON_B_ID} or button_data in {
+        BUTTON_B_DATA,
+        CALLBACK_BUTTON_B_DATA,
+    }:
         return "B"
     return "未知"
 
@@ -185,6 +252,14 @@ def _build_button_message_payload() -> dict[str, Any]:
         "msg_type": 2,
         "markdown": MarkdownPayload(content=BUTTON_PROMPT),
         "keyboard": _build_button_keyboard(),
+    }
+
+
+def _build_callback_button_message_payload() -> dict[str, Any]:
+    return {
+        "msg_type": 2,
+        "markdown": MarkdownPayload(content=CALLBACK_BUTTON_PROMPT),
+        "keyboard": _build_callback_button_keyboard(),
     }
 
 
@@ -516,7 +591,7 @@ def _chunk_text(text: str, size: int = MAX_TEXT_CHUNK_SIZE) -> list[str]:
     "astrbot_plugin_util_official",
     "Codex",
     "QQOfficial 适配版虚拟开盒娱乐插件",
-    "1.1.1",
+    "1.1.8",
 )
 class QQOfficialUtilPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -759,8 +834,32 @@ class QQOfficialUtilPlugin(Star):
 
     @filter.command("qqofficial_buttons")
     async def qqofficial_buttons(self, event: AstrMessageEvent):
+        async for result in self._send_qqofficial_button_message(
+            event,
+            command_name="qqofficial_buttons",
+            payload=_build_button_message_payload(),
+        ):
+            yield result
+
+    @filter.command("qqofficial_callback_buttons")
+    async def qqofficial_callback_buttons(self, event: AstrMessageEvent):
+        async for result in self._send_qqofficial_button_message(
+            event,
+            command_name="qqofficial_callback_buttons",
+            payload=_build_callback_button_message_payload(),
+        ):
+            yield result
+
+    async def _send_qqofficial_button_message(
+        self,
+        event: AstrMessageEvent,
+        *,
+        command_name: str,
+        payload: dict[str, Any],
+    ):
         logger.info(
-            "[QQOfficialUtil] qqofficial_buttons 触发: event_class=%s.%s, platform=%r, message=%r",
+            "[QQOfficialUtil] %s 触发: event_class=%s.%s, platform=%r, message=%r",
+            command_name,
             type(event).__module__,
             type(event).__name__,
             event.get_platform_name() if hasattr(event, "get_platform_name") else None,
@@ -768,7 +867,8 @@ class QQOfficialUtilPlugin(Star):
         )
         if not _is_qqofficial_message_event(event):
             logger.warning(
-                "[QQOfficialUtil] qqofficial_buttons 拒绝：非 QQOfficial 事件 event_class=%s.%s",
+                "[QQOfficialUtil] %s 拒绝：非 QQOfficial 事件 event_class=%s.%s",
+                command_name,
                 type(event).__module__,
                 type(event).__name__,
             )
@@ -780,55 +880,69 @@ class QQOfficialUtilPlugin(Star):
         raw_message = getattr(event.message_obj, "raw_message", None)
         if raw_message is None:
             logger.warning(
-                "[QQOfficialUtil] qqofficial_buttons 拒绝：message_obj 缺少 raw_message。message_obj=%s",
+                "[QQOfficialUtil] %s 拒绝：message_obj 缺少 raw_message。message_obj=%s",
+                command_name,
                 _debug_json(getattr(event, "message_obj", None)),
             )
             yield event.plain_result("未找到 QQOfficial 原始消息对象，无法发送按钮。")
             return
 
         debug_context = _build_button_debug_context(raw_message, event.message_obj)
-        payload = _build_button_message_payload()
         _add_passive_reply_context(
             payload,
             msg_id=_extract_message_reference_id(raw_message, event.message_obj),
             msg_seq=getattr(raw_message, "msg_seq", None),
         )
         logger.info(
-            "[QQOfficialUtil] qqofficial_buttons 原始上下文: %s",
+            "[QQOfficialUtil] %s 原始上下文: %s",
+            command_name,
             _debug_json(debug_context),
         )
         logger.info(
-            "[QQOfficialUtil] qqofficial_buttons 最终发送 payload: %s",
+            "[QQOfficialUtil] %s 最终发送 payload: %s",
+            command_name,
             _debug_json(payload),
         )
         if not payload.get("msg_id") and not payload.get("event_id"):
             logger.warning(
-                "[QQOfficialUtil] qqofficial_buttons 未找到 msg_id/event_id，平台可能按主动消息处理。"
+                "[QQOfficialUtil] %s 未找到 msg_id/event_id，平台可能按主动消息处理。",
+                command_name,
             )
         try:
             if isinstance(raw_message, botpy_message.GroupMessage):
                 logger.info(
-                    "[QQOfficialUtil] qqofficial_buttons 使用 group 接口发送: group_openid=%s",
+                    "[QQOfficialUtil] %s 使用 group 接口发送: group_openid=%s",
+                    command_name,
                     raw_message.group_openid,
                 )
                 ret = await event.bot.api.post_group_message(
                     group_openid=raw_message.group_openid,
                     **payload,
                 )
-                logger.info("[QQOfficialUtil] qqofficial_buttons group API 返回: %s", _debug_json(ret))
+                logger.info(
+                    "[QQOfficialUtil] %s group API 返回: %s",
+                    command_name,
+                    _debug_json(ret),
+                )
             elif isinstance(raw_message, botpy_message.C2CMessage):
                 logger.info(
-                    "[QQOfficialUtil] qqofficial_buttons 使用 c2c 接口发送: openid=%s",
+                    "[QQOfficialUtil] %s 使用 c2c 接口发送: openid=%s",
+                    command_name,
                     raw_message.author.user_openid,
                 )
                 ret = await event.bot.api.post_c2c_message(
                     openid=raw_message.author.user_openid,
                     **payload,
                 )
-                logger.info("[QQOfficialUtil] qqofficial_buttons c2c API 返回: %s", _debug_json(ret))
+                logger.info(
+                    "[QQOfficialUtil] %s c2c API 返回: %s",
+                    command_name,
+                    _debug_json(ret),
+                )
             else:
                 logger.warning(
-                    "[QQOfficialUtil] qqofficial_buttons 不支持的 raw_message 类型: %s",
+                    "[QQOfficialUtil] %s 不支持的 raw_message 类型: %s",
+                    command_name,
                     debug_context["raw_message_class"],
                 )
                 yield event.plain_result(
@@ -836,11 +950,11 @@ class QQOfficialUtilPlugin(Star):
                 )
                 return
         except Exception as exc:
-            logger.exception(f"[QQOfficialUtil] 发送按钮消息失败: {exc}")
+            logger.exception("[QQOfficialUtil] %s 发送按钮消息失败: %s", command_name, exc)
             yield event.plain_result(f"发送按钮消息失败：{exc}")
             return
 
-        logger.info("[QQOfficialUtil] qqofficial_buttons 发送流程结束，停止事件传播。")
+        logger.info("[QQOfficialUtil] %s 发送流程结束，停止事件传播。", command_name)
         event.stop_event()
 
     @filter.command("qqofficial_button_a")

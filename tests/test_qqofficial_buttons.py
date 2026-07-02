@@ -129,11 +129,35 @@ def test_button_keyboard_has_two_command_buttons():
     assert payload["keyboard"]["content"]["rows"][0]["buttons"][1]["id"] == module.BUTTON_B_ID
 
 
+def test_callback_button_keyboard_has_two_callback_buttons():
+    module = load_plugin_module()
+
+    keyboard = module._build_callback_button_keyboard()
+    payload = module._build_callback_button_message_payload()
+
+    assert "content" in keyboard
+    assert len(keyboard["content"]["rows"]) == 1
+    buttons = keyboard["content"]["rows"][0]["buttons"]
+    assert len(buttons) == 2
+    assert buttons[0]["action"]["type"] == 1
+    assert buttons[1]["action"]["type"] == 1
+    assert buttons[0]["action"]["data"] == "callback_button_a"
+    assert buttons[1]["action"]["data"] == "callback_button_b"
+    assert buttons[0]["action"]["permission"]["type"] == 2
+    assert buttons[1]["action"]["permission"]["type"] == 2
+    assert payload["msg_type"] == 2
+    assert payload["markdown"]["content"] == module.CALLBACK_BUTTON_PROMPT
+    assert payload["keyboard"]["content"]["rows"][0]["buttons"][0]["id"] == module.CALLBACK_BUTTON_A_ID
+    assert payload["keyboard"]["content"]["rows"][0]["buttons"][1]["id"] == module.CALLBACK_BUTTON_B_ID
+
+
 def test_button_reply_text_maps_id_and_data():
     module = load_plugin_module()
 
     assert module._build_button_reply_text(module.BUTTON_A_ID, None) == "你按了 A"
     assert module._build_button_reply_text(None, module.BUTTON_B_DATA) == "你按了 B"
+    assert module._build_button_reply_text(module.CALLBACK_BUTTON_A_ID, None) == "你按了 A"
+    assert module._build_button_reply_text(None, module.CALLBACK_BUTTON_B_DATA) == "你按了 B"
     assert module._build_button_reply_text(None, None) == "你按了 未知"
     assert module._build_button_reply_payload("hello") == {
         "content": "hello",
@@ -223,6 +247,31 @@ def test_button_command_sends_only_group_or_c2c(monkeypatch):
     assert c2c_api.calls[0][1]["keyboard"] == module._build_button_keyboard()
     assert getattr(group_event, "stopped", False) is True
     assert getattr(c2c_event, "stopped", False) is True
+
+
+def test_callback_button_command_sends_callback_keyboard(monkeypatch):
+    module = load_plugin_module()
+    plugin = object.__new__(module.QQOfficialUtilPlugin)
+
+    group_api = FakeBotApi()
+    group_event = FakeQQOfficialMessageEvent(module)
+    group_event.message_obj = type("Obj", (), {"raw_message": FakeGroupMessage(), "sender": None, "message_id": "mid"})()
+    group_event.bot = SimpleNamespace(api=group_api)
+    group_event.stop_event = lambda: setattr(group_event, "stopped", True)
+
+    monkeypatch.setattr(module.botpy_message, "GroupMessage", FakeGroupMessage)
+    monkeypatch.setattr(module.botpy_message, "C2CMessage", FakeC2CMessage)
+
+    group_result = _collect_async_gen(plugin.qqofficial_callback_buttons(group_event))
+
+    assert group_result == []
+    assert group_api.calls[0][0] == "group"
+    assert group_api.calls[0][1]["msg_type"] == 2
+    assert group_api.calls[0][1]["msg_id"] == "raw-mid"
+    assert group_api.calls[0][1]["msg_seq"] == 42
+    assert group_api.calls[0][1]["markdown"]["content"] == module.CALLBACK_BUTTON_PROMPT
+    assert group_api.calls[0][1]["keyboard"] == module._build_callback_button_keyboard()
+    assert getattr(group_event, "stopped", False) is True
 
 
 def test_command_buttons_reply_with_pressed_button():
