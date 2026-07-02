@@ -10,6 +10,7 @@ import urllib.request
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import botpy.message as botpy_message
@@ -43,6 +44,7 @@ BUTTON_A_LABEL = "按钮 A"
 BUTTON_B_LABEL = "按钮 B"
 BUTTON_A_VISITED_LABEL = "已按下 A"
 BUTTON_B_VISITED_LABEL = "已按下 B"
+QQOFFICIAL_INTERACTION_INTENT = 1 << 26
 
 TENCENT_MAP_API_BASE = "https://apis.map.qq.com"
 TENCENT_MAP_PLACE_SEARCH_PATH = "/ws/place/v1/search"
@@ -109,6 +111,15 @@ class QQOfficialInteractionContext:
     button_id: str | None = None
     button_data: str | None = None
     message_id: str | None = None
+
+
+class QQOfficialEventPlatformProxy:
+    def __init__(self, client: Any, platform_name: str | None):
+        self.client = client
+        self._platform_name = platform_name
+
+    def meta(self) -> Any:
+        return SimpleNamespace(name=self._platform_name)
 
 
 def _build_button_keyboard() -> qinline.Keyboard:
@@ -528,23 +539,76 @@ class QQOfficialUtilPlugin(Star):
 
     def _install_interaction_hook(self) -> None:
         patched = False
+        seen_platforms = 0
         for platform in self.context.platform_manager.platform_insts:
             if platform.meta().name not in QQOFFICIAL_PLATFORMS:
                 continue
+            seen_platforms += 1
             client = getattr(platform, "client", None)
             if client is None:
                 continue
+            self._ensure_interaction_intent(client)
             if self._patch_qqofficial_client(platform, client):
                 patched = True
         if patched:
             self._interaction_hook_installed = True
+        elif seen_platforms == 0:
+            logger.warning("[QQOfficialUtil] 未发现已加载的 QQOfficial 平台，暂无法安装按钮回调 hook。")
+
+    def _install_interaction_hook_from_event(self, event: AstrMessageEvent) -> None:
+        client = getattr(event, "bot", None)
+        if client is None:
+            logger.warning("[QQOfficialUtil] 当前事件缺少 bot client，无法兜底安装按钮回调 hook。")
+            return
+
+        self._ensure_interaction_intent(client)
+        platform = QQOfficialEventPlatformProxy(
+            client,
+            event.get_platform_name() if hasattr(event, "get_platform_name") else None,
+        )
+        if self._patch_qqofficial_client(platform, client):
+            self._interaction_hook_installed = True
+
+    def _ensure_interaction_intent(self, client: Any) -> None:
+        current_intents = getattr(client, "intents", None)
+        if not isinstance(current_intents, int):
+            logger.warning(
+                "[QQOfficialUtil] 无法确认 interaction intent: client=%s, intents=%r",
+                type(client).__name__,
+                current_intents,
+            )
+            return
+        if current_intents & QQOFFICIAL_INTERACTION_INTENT:
+            logger.info(
+                "[QQOfficialUtil] QQOfficial client 已包含 interaction intent: intents=%s",
+                current_intents,
+            )
+            return
+        client.intents = current_intents | QQOFFICIAL_INTERACTION_INTENT
+        logger.warning(
+            "[QQOfficialUtil] 已为 QQOfficial client 补充 interaction intent: %s -> %s。"
+            "如果 websocket 已连接，需要重启/重连 QQOfficial 平台后才会收到按钮点击事件。",
+            current_intents,
+            client.intents,
+        )
 
     def _patch_qqofficial_client(self, platform: Any, client: Any) -> bool:
-        if getattr(client, "_codex_button_hook_installed", False):
+        if (
+            getattr(client, "_codex_button_hook_installed", False)
+            and getattr(client, "_codex_button_hook_owner", None) == id(self)
+        ):
+            logger.info(
+                "[QQOfficialUtil] QQOfficial interaction hook 已安装在当前插件实例: client=%s",
+                type(client).__name__,
+            )
             return False
 
         plugin = self
-        original = getattr(client, "on_interaction_create", None)
+        original = getattr(
+            client,
+            "_codex_button_hook_original",
+            getattr(client, "on_interaction_create", None),
+        )
 
         async def on_interaction_create(interaction: Interaction):
             logger.info(
@@ -559,6 +623,8 @@ class QQOfficialUtilPlugin(Star):
 
         client.on_interaction_create = on_interaction_create
         client._codex_button_hook_installed = True
+        client._codex_button_hook_owner = id(self)
+        client._codex_button_hook_original = original
         logger.info(
             "[QQOfficialUtil] 已安装 QQOfficial interaction hook: platform=%r, client=%s, original_handler=%s",
             platform.meta().name if hasattr(platform, "meta") else None,
@@ -710,6 +776,8 @@ class QQOfficialUtilPlugin(Star):
             )
             yield event.plain_result("该指令仅支持 QQOfficialMessageEvent / QQOfficialWebhookMessageEvent。")
             return
+
+        self._install_interaction_hook_from_event(event)
 
         raw_message = getattr(event.message_obj, "raw_message", None)
         if raw_message is None:

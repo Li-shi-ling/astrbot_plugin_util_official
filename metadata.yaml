@@ -1,6 +1,6 @@
 name: astrbot_plugin_util_official
 display_name: QQOfficial Util
 desc: QQOfficial 适配版娱乐工具插件，仅支持 @机器人 盒 QQ号 格式
-version: v1.1.5
+version: v1.1.6
 author: lishining,Codex
 repo: "https://github.com/Li-shi-ling/astrbot_plugin_util_official"

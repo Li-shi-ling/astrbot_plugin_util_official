@@ -1,5 +1,10 @@
 # 更新日志
 
+## v1.1.6
+
+- 修复按钮点击后无响应的回调接收链路：发送按钮前兜底安装当前 QQOfficial client 的 `on_interaction_create` hook，并补充 `INTERACTION_CREATE` 所需的 interaction intent。
+- 增加日志提示：如果 websocket 已连接，补充 interaction intent 后需要重启/重连 QQOfficial 平台才会收到点击事件。
+
 ## v1.1.5
 
 - 调整 `qqofficial_buttons` 自定义按钮 payload 为 QQ 官方发送方式中的 `keyboard.content.rows` 结构，避免 API 返回成功但客户端不渲染按钮。

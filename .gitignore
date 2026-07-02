@@ -212,3 +212,6 @@ __marimo__/
 参考/
 docs/
 日志/
+.omx/
+data/
+CONSTRAINTS.md
