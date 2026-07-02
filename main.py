@@ -223,6 +223,24 @@ def _add_passive_reply_context(
     return payload
 
 
+def _debug_json(value: Any) -> str:
+    return json.dumps(_json_safe(value), ensure_ascii=False, default=str)
+
+
+def _build_button_debug_context(raw_message: Any, message_obj: Any) -> dict[str, Any]:
+    author = getattr(raw_message, "author", None)
+    return {
+        "raw_message_class": f"{type(raw_message).__module__}.{type(raw_message).__name__}",
+        "raw_id": getattr(raw_message, "id", None),
+        "raw_msg_seq": getattr(raw_message, "msg_seq", None),
+        "raw_event_id": getattr(raw_message, "event_id", None),
+        "message_obj_message_id": getattr(message_obj, "message_id", None),
+        "group_openid": getattr(raw_message, "group_openid", None),
+        "author_user_openid": getattr(author, "user_openid", None),
+        "author_member_openid": getattr(author, "member_openid", None),
+    }
+
+
 def _extract_interaction_context(raw_event: Any) -> QQOfficialInteractionContext | None:
     if raw_event is None:
         return None
@@ -527,6 +545,10 @@ class QQOfficialUtilPlugin(Star):
         original = getattr(client, "on_interaction_create", None)
 
         async def on_interaction_create(interaction: Interaction):
+            logger.info(
+                "[QQOfficialUtil] 收到按钮回调原始事件: %s",
+                _debug_json(interaction),
+            )
             await plugin._handle_qqofficial_interaction(platform, interaction)
             if original and original is not on_interaction_create:
                 maybe = original(interaction)
@@ -535,6 +557,12 @@ class QQOfficialUtilPlugin(Star):
 
         client.on_interaction_create = on_interaction_create
         client._codex_button_hook_installed = True
+        logger.info(
+            "[QQOfficialUtil] 已安装 QQOfficial interaction hook: platform=%r, client=%s, original_handler=%s",
+            platform.meta().name if hasattr(platform, "meta") else None,
+            type(client).__name__,
+            bool(original),
+        )
         return True
 
     async def _handle_qqofficial_interaction(
@@ -544,15 +572,30 @@ class QQOfficialUtilPlugin(Star):
     ) -> None:
         context = _extract_interaction_context(interaction)
         if not context or not context.interaction_id:
+            logger.warning("[QQOfficialUtil] 忽略按钮回调：缺少 interaction_id。")
             return
+        logger.info(
+            "[QQOfficialUtil] 解析按钮回调上下文: %s",
+            _debug_json(_interaction_to_debug_dict(context)),
+        )
         if context.button_id not in {BUTTON_A_ID, BUTTON_B_ID} and context.button_data not in {
             BUTTON_A_DATA,
             BUTTON_B_DATA,
         }:
+            logger.info(
+                "[QQOfficialUtil] 忽略非本插件按钮回调: button_id=%r, button_data=%r",
+                context.button_id,
+                context.button_data,
+            )
             return
 
         try:
-            await platform.client.api.on_interaction_result(context.interaction_id, 0)
+            ack_ret = await platform.client.api.on_interaction_result(context.interaction_id, 0)
+            logger.info(
+                "[QQOfficialUtil] 按钮回调 ACK 成功: interaction_id=%s, ret=%s",
+                context.interaction_id,
+                _debug_json(ack_ret),
+            )
         except Exception as exc:
             logger.warning(f"[QQOfficialUtil] interaction ACK 失败: {exc}")
 
@@ -565,16 +608,28 @@ class QQOfficialUtilPlugin(Star):
         try:
             _add_passive_reply_context(payload, event_id=context.interaction_id)
             if raw_scene == "group" and context.group_openid:
-                await platform.client.api.post_group_message(
+                logger.info(
+                    "[QQOfficialUtil] 准备回复按钮回调(group): group_openid=%s, payload=%s",
+                    context.group_openid,
+                    _debug_json(payload),
+                )
+                ret = await platform.client.api.post_group_message(
                     group_openid=context.group_openid,
                     **payload,
                 )
+                logger.info("[QQOfficialUtil] 按钮回调回复成功(group): ret=%s", _debug_json(ret))
                 return
             if raw_scene == "c2c" and context.user_openid:
-                await platform.client.api.post_c2c_message(
+                logger.info(
+                    "[QQOfficialUtil] 准备回复按钮回调(c2c): openid=%s, payload=%s",
+                    context.user_openid,
+                    _debug_json(payload),
+                )
+                ret = await platform.client.api.post_c2c_message(
                     openid=context.user_openid,
                     **payload,
                 )
+                logger.info("[QQOfficialUtil] 按钮回调回复成功(c2c): ret=%s", _debug_json(ret))
                 return
             logger.warning(
                 f"[QQOfficialUtil] 按钮回调场景不受支持: scene={context.scene!r}, chat_type={context.chat_type!r}"
@@ -638,33 +693,76 @@ class QQOfficialUtilPlugin(Star):
 
     @filter.command("qqofficial_buttons")
     async def qqofficial_buttons(self, event: AstrMessageEvent):
+        logger.info(
+            "[QQOfficialUtil] qqofficial_buttons 触发: event_class=%s.%s, platform=%r, message=%r",
+            type(event).__module__,
+            type(event).__name__,
+            event.get_platform_name() if hasattr(event, "get_platform_name") else None,
+            event.get_message_str() if hasattr(event, "get_message_str") else None,
+        )
         if not _is_qqofficial_message_event(event):
+            logger.warning(
+                "[QQOfficialUtil] qqofficial_buttons 拒绝：非 QQOfficial 事件 event_class=%s.%s",
+                type(event).__module__,
+                type(event).__name__,
+            )
             yield event.plain_result("该指令仅支持 QQOfficialMessageEvent / QQOfficialWebhookMessageEvent。")
             return
 
         raw_message = getattr(event.message_obj, "raw_message", None)
         if raw_message is None:
+            logger.warning(
+                "[QQOfficialUtil] qqofficial_buttons 拒绝：message_obj 缺少 raw_message。message_obj=%s",
+                _debug_json(getattr(event, "message_obj", None)),
+            )
             yield event.plain_result("未找到 QQOfficial 原始消息对象，无法发送按钮。")
             return
 
+        debug_context = _build_button_debug_context(raw_message, event.message_obj)
         payload = _build_button_message_payload()
         _add_passive_reply_context(
             payload,
             msg_id=_extract_message_reference_id(raw_message, event.message_obj),
             msg_seq=getattr(raw_message, "msg_seq", None),
         )
+        logger.info(
+            "[QQOfficialUtil] qqofficial_buttons 原始上下文: %s",
+            _debug_json(debug_context),
+        )
+        logger.info(
+            "[QQOfficialUtil] qqofficial_buttons 最终发送 payload: %s",
+            _debug_json(payload),
+        )
+        if not payload.get("msg_id") and not payload.get("event_id"):
+            logger.warning(
+                "[QQOfficialUtil] qqofficial_buttons 未找到 msg_id/event_id，平台可能按主动消息处理。"
+            )
         try:
             if isinstance(raw_message, botpy_message.GroupMessage):
-                await event.bot.api.post_group_message(
+                logger.info(
+                    "[QQOfficialUtil] qqofficial_buttons 使用 group 接口发送: group_openid=%s",
+                    raw_message.group_openid,
+                )
+                ret = await event.bot.api.post_group_message(
                     group_openid=raw_message.group_openid,
                     **payload,
                 )
+                logger.info("[QQOfficialUtil] qqofficial_buttons group API 返回: %s", _debug_json(ret))
             elif isinstance(raw_message, botpy_message.C2CMessage):
-                await event.bot.api.post_c2c_message(
+                logger.info(
+                    "[QQOfficialUtil] qqofficial_buttons 使用 c2c 接口发送: openid=%s",
+                    raw_message.author.user_openid,
+                )
+                ret = await event.bot.api.post_c2c_message(
                     openid=raw_message.author.user_openid,
                     **payload,
                 )
+                logger.info("[QQOfficialUtil] qqofficial_buttons c2c API 返回: %s", _debug_json(ret))
             else:
+                logger.warning(
+                    "[QQOfficialUtil] qqofficial_buttons 不支持的 raw_message 类型: %s",
+                    debug_context["raw_message_class"],
+                )
                 yield event.plain_result(
                     "该指令仅支持群聊和 C2C 消息类型。"
                 )
@@ -674,6 +772,7 @@ class QQOfficialUtilPlugin(Star):
             yield event.plain_result(f"发送按钮消息失败：{exc}")
             return
 
+        logger.info("[QQOfficialUtil] qqofficial_buttons 发送流程结束，停止事件传播。")
         event.stop_event()
 
     def _extract_box_command_text(self, event: AstrMessageEvent) -> str | None:
