@@ -1,5 +1,9 @@
 # 更新日志
 
+## v1.1.5
+
+- 调整 `qqofficial_buttons` 自定义按钮 payload 为 QQ 官方发送方式中的 `keyboard.content.rows` 结构，避免 API 返回成功但客户端不渲染按钮。
+
 ## v1.1.4
 
 - 为 `qqofficial_buttons` 增加详细诊断日志，记录事件类型、原始消息字段、最终发送 payload、API 返回值和按钮回调处理过程。

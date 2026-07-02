@@ -113,28 +113,30 @@ class QQOfficialInteractionContext:
 
 def _build_button_keyboard() -> qinline.Keyboard:
     return {
-        "rows": [
-            {
-                "buttons": [
-                    _build_button_payload(
-                        QQOfficialButtonSpec(
-                            button_id=BUTTON_A_ID,
-                            label=BUTTON_A_LABEL,
-                            visited_label=BUTTON_A_VISITED_LABEL,
-                            data=BUTTON_A_DATA,
-                        )
-                    ),
-                    _build_button_payload(
-                        QQOfficialButtonSpec(
-                            button_id=BUTTON_B_ID,
-                            label=BUTTON_B_LABEL,
-                            visited_label=BUTTON_B_VISITED_LABEL,
-                            data=BUTTON_B_DATA,
-                        )
-                    ),
-                ]
-            }
-        ]
+        "content": {
+            "rows": [
+                {
+                    "buttons": [
+                        _build_button_payload(
+                            QQOfficialButtonSpec(
+                                button_id=BUTTON_A_ID,
+                                label=BUTTON_A_LABEL,
+                                visited_label=BUTTON_A_VISITED_LABEL,
+                                data=BUTTON_A_DATA,
+                            )
+                        ),
+                        _build_button_payload(
+                            QQOfficialButtonSpec(
+                                button_id=BUTTON_B_ID,
+                                label=BUTTON_B_LABEL,
+                                visited_label=BUTTON_B_VISITED_LABEL,
+                                data=BUTTON_B_DATA,
+                            )
+                        ),
+                    ]
+                }
+            ]
+        }
     }
 
 
