@@ -331,6 +331,31 @@ def _short_button_name(name: str, max_len: int = 5) -> str:
 
 
 def _build_roulette_keyboard(game: RouletteGame | None) -> qinline.Keyboard:
+    if not game:
+        return {"content": {"rows": []}}
+
+    if game.phase == "waiting":
+        return {
+            "content": {
+                "rows": [
+                    {
+                        "buttons": [
+                            _build_roulette_button(
+                                "roulette_join",
+                                "加入游戏",
+                                "轮盘加入",
+                            ),
+                            _build_roulette_button(
+                                "roulette_leave",
+                                "退出游戏",
+                                "轮盘退出",
+                            ),
+                        ]
+                    }
+                ]
+            }
+        }
+
     rows: list[dict[str, list[qinline.Button]]] = [
         {
             "buttons": [
@@ -341,37 +366,35 @@ def _build_roulette_keyboard(game: RouletteGame | None) -> qinline.Keyboard:
         }
     ]
 
-    if game:
-        target_buttons: list[qinline.Button] = []
-        for number, player in enumerate(game.players, start=1):
-            if not player.alive:
-                continue
-            label = f"{number}.{_short_button_name(player.display_name)}"
-            target_buttons.append(
+    target_buttons: list[qinline.Button] = []
+    current_user_id = game.current_player().user_id
+    for number, player in enumerate(game.players, start=1):
+        if not player.alive or player.user_id == current_user_id:
+            continue
+        label = f"{number}.{_short_button_name(player.display_name)}"
+        target_buttons.append(
+            _build_roulette_button(
+                f"roulette_target_{number}",
+                label,
+                f"轮盘开枪 {number}",
+            )
+        )
+    for offset in range(0, min(len(target_buttons), 10), 5):
+        rows.append({"buttons": target_buttons[offset : offset + 5]})
+
+    current_items = set(game.current_player().items)
+    item_buttons: list[qinline.Button] = []
+    for item_name in ROULETTE_NO_TARGET_BUTTON_ITEMS:
+        if item_name in current_items:
+            item_buttons.append(
                 _build_roulette_button(
-                    f"roulette_target_{number}",
-                    label,
-                    f"轮盘开枪 {number}",
+                    f"roulette_item_{item_name}",
+                    item_name,
+                    f"轮盘道具 {item_name}",
                 )
             )
-        for offset in range(0, min(len(target_buttons), 10), 5):
-            rows.append({"buttons": target_buttons[offset : offset + 5]})
-
-        current_items = set()
-        if game.phase == "playing":
-            current_items = set(game.current_player().items)
-        item_buttons: list[qinline.Button] = []
-        for item_name in ROULETTE_NO_TARGET_BUTTON_ITEMS:
-            if item_name in current_items:
-                item_buttons.append(
-                    _build_roulette_button(
-                        f"roulette_item_{item_name}",
-                        item_name,
-                        f"轮盘道具 {item_name}",
-                    )
-                )
-        if item_buttons:
-            rows.append({"buttons": item_buttons[:5]})
+    if item_buttons:
+        rows.append({"buttons": item_buttons[:5]})
 
     return {"content": {"rows": rows[:5]}}
 
@@ -1271,6 +1294,28 @@ class QQOfficialUtilPlugin(Star):
             result = game.add_player(platform_user_id, display_name)
             hint = self._roulette_bind_hint(display_name, platform_user_id)
             return f"{result.message}\n{hint}", game, True
+        if action == "退出":
+            if game.phase != "waiting":
+                raise RouletteGameError("本局已经开始，不能退出房间。")
+            player = game.get_player(platform_user_id)
+            if not player:
+                raise RouletteGameError("你还没有加入本局。")
+            player_name = player.display_name
+            game.players = [
+                existing
+                for existing in game.players
+                if existing.user_id != platform_user_id
+            ]
+            if not game.players:
+                self.roulette_games.pop(session_id, None)
+                return f"{player_name} 退出了房间，房间已关闭。", None, False
+            if game.owner_id == platform_user_id:
+                game.owner_id = game.players[0].user_id
+            return (
+                f"{player_name} 退出了房间（{len(game.players)}/{MAX_PLAYERS}）。",
+                game,
+                True,
+            )
         if action == "开始":
             result = game.start(platform_user_id)
             return f"{result.message}\n\n{game.format_status()}", game, True
@@ -1403,7 +1448,7 @@ class QQOfficialUtilPlugin(Star):
         return (
             "恶魔轮盘指令：\n"
             "轮盘绑定 昵称 / 轮盘我的名字 / 轮盘改名 新昵称\n"
-            "轮盘创建 / 轮盘加入 / 轮盘开始 / 轮盘状态 / 轮盘结束\n"
+            "轮盘创建 / 轮盘加入 / 轮盘退出 / 轮盘开始 / 轮盘状态 / 轮盘结束\n"
             "轮盘开枪 自己 / 轮盘开枪 编号\n"
             "轮盘道具 啤酒|香烟|手锯|换向器 / 轮盘道具 手铐 编号"
         )
