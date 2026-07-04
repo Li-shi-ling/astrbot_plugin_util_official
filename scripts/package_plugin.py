@@ -12,7 +12,7 @@ DEFAULT_OUTPUT_DIR = PLUGIN_ROOT / "dist"
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Package tracked plugin files into an AstrBot local-install zip.",
+        description="Package plugin files into an AstrBot local-install zip.",
     )
     parser.add_argument(
         "-o",
@@ -76,7 +76,7 @@ def package_plugin(output_path: Path) -> Path:
 
 def list_tracked_files() -> list[Path]:
     result = subprocess.run(
-        ["git", "ls-files", "-z"],
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         cwd=PLUGIN_ROOT,
         check=True,
         capture_output=True,

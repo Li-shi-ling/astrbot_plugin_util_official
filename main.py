@@ -21,8 +21,42 @@ from botpy.types.message import MarkdownPayload
 import astrbot.api.message_components as Comp
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.config import AstrBotConfig
+
+try:
+    from .core.roulette_db import (
+        RouletteDBManager,
+        RouletteUserRepo,
+        validate_display_name,
+    )
+    from .core.roulette_game import (
+        ITEM_BEER,
+        ITEM_CIGARETTE,
+        ITEM_INVERTER,
+        ITEM_SAW,
+        MAX_PLAYERS,
+        RouletteGame,
+        RouletteGameError,
+        RoulettePlayer,
+    )
+except ImportError:
+    import sys
+
+    plugin_dir = Path(__file__).resolve().parent
+    if str(plugin_dir) not in sys.path:
+        sys.path.insert(0, str(plugin_dir))
+    from core.roulette_db import RouletteDBManager, RouletteUserRepo, validate_display_name
+    from core.roulette_game import (
+        ITEM_BEER,
+        ITEM_CIGARETTE,
+        ITEM_INVERTER,
+        ITEM_SAW,
+        MAX_PLAYERS,
+        RouletteGame,
+        RouletteGameError,
+        RoulettePlayer,
+    )
 
 QQOFFICIAL_PLATFORMS = {"qq_official", "qq_official_webhook"}
 QQOFFICIAL_MESSAGE_EVENT_NAMES = {
@@ -54,6 +88,8 @@ BUTTON_B_VISITED_LABEL = "已按下 B"
 CALLBACK_BUTTON_A_VISITED_LABEL = "已回调 A"
 CALLBACK_BUTTON_B_VISITED_LABEL = "已回调 B"
 QQOFFICIAL_INTERACTION_INTENT = 1 << 26
+ROULETTE_COMMAND_PREFIX = "轮盘"
+ROULETTE_NO_TARGET_BUTTON_ITEMS = (ITEM_BEER, ITEM_CIGARETTE, ITEM_SAW, ITEM_INVERTER)
 
 TENCENT_MAP_API_BASE = "https://apis.map.qq.com"
 TENCENT_MAP_PLACE_SEARCH_PATH = "/ws/place/v1/search"
@@ -260,6 +296,96 @@ def _build_callback_button_message_payload() -> dict[str, Any]:
         "msg_type": 2,
         "markdown": MarkdownPayload(content=CALLBACK_BUTTON_PROMPT),
         "keyboard": _build_callback_button_keyboard(),
+    }
+
+
+def _build_roulette_button(
+    button_id: str,
+    label: str,
+    data: str,
+) -> qinline.Button:
+    return {
+        "id": button_id,
+        "render_data": {
+            "label": label,
+            "visited_label": label,
+            "style": 1,
+        },
+        "action": {
+            "type": 2,
+            "permission": {
+                "type": 2,
+            },
+            "data": data,
+            "reply": True,
+            "enter": False,
+            "unsupport_tips": "当前客户端不支持该按钮。",
+        },
+    }
+
+
+def _short_button_name(name: str, max_len: int = 5) -> str:
+    if len(name) <= max_len:
+        return name
+    return name[:max_len]
+
+
+def _build_roulette_keyboard(game: RouletteGame | None) -> qinline.Keyboard:
+    rows: list[dict[str, list[qinline.Button]]] = [
+        {
+            "buttons": [
+                _build_roulette_button("roulette_shoot_self", "打自己", "轮盘开枪 自己"),
+                _build_roulette_button("roulette_status", "状态", "轮盘状态"),
+                _build_roulette_button("roulette_end", "结束", "轮盘结束"),
+            ]
+        }
+    ]
+
+    if game:
+        target_buttons: list[qinline.Button] = []
+        for number, player in enumerate(game.players, start=1):
+            if not player.alive:
+                continue
+            label = f"{number}.{_short_button_name(player.display_name)}"
+            target_buttons.append(
+                _build_roulette_button(
+                    f"roulette_target_{number}",
+                    label,
+                    f"轮盘开枪 {number}",
+                )
+            )
+        for offset in range(0, min(len(target_buttons), 10), 5):
+            rows.append({"buttons": target_buttons[offset : offset + 5]})
+
+        current_items = set()
+        if game.phase == "playing":
+            current_items = set(game.current_player().items)
+        item_buttons: list[qinline.Button] = []
+        for item_name in ROULETTE_NO_TARGET_BUTTON_ITEMS:
+            if game.phase != "playing" or item_name in current_items:
+                item_buttons.append(
+                    _build_roulette_button(
+                        f"roulette_item_{item_name}",
+                        item_name,
+                        f"轮盘道具 {item_name}",
+                    )
+                )
+        if item_buttons:
+            rows.append({"buttons": item_buttons[:5]})
+
+    return {"content": {"rows": rows[:5]}}
+
+
+def _build_roulette_message_payload(
+    text: str,
+    game: RouletteGame | None = None,
+    *,
+    with_keyboard: bool = True,
+) -> dict[str, Any]:
+    return {
+        "msg_type": 2,
+        "markdown": MarkdownPayload(content=text or "轮盘"),
+        "keyboard": _build_roulette_keyboard(game) if with_keyboard else None,
     }
 
 
@@ -591,7 +717,7 @@ def _chunk_text(text: str, size: int = MAX_TEXT_CHUNK_SIZE) -> list[str]:
     "astrbot_plugin_util_official",
     "Codex",
     "QQOfficial 适配版虚拟开盒娱乐插件",
-    "1.1.8",
+    "1.2.0",
 )
 class QQOfficialUtilPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -601,9 +727,15 @@ class QQOfficialUtilPlugin(Star):
         self.location_pool: list[str] = []
         self.search_region_pool: list[dict[str, str]] = []
         self._interaction_hook_installed = False
+        self.roulette_db_path = Path(StarTools.get_data_dir()) / "roulette.db"
+        self.roulette_db = RouletteDBManager(self.roulette_db_path)
+        self.roulette_user_repo = RouletteUserRepo(self.roulette_db)
+        self.roulette_games: dict[str, RouletteGame] = {}
+        self.roulette_locks: dict[str, asyncio.Lock] = {}
         self._load_location_data()
 
     async def initialize(self):
+        await self.roulette_db.init_db()
         self._install_interaction_hook()
 
     @filter.on_platform_loaded()
@@ -812,6 +944,56 @@ class QQOfficialUtilPlugin(Star):
         yield event.chain_result(chain)
         event.stop_event()
 
+    @filter.platform_adapter_type(
+        filter.PlatformAdapterType.QQOFFICIAL
+        | filter.PlatformAdapterType.QQOFFICIAL_WEBHOOK
+    )
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def qqofficial_roulette(self, event: AstrMessageEvent):
+        command_text = self._extract_roulette_command_text(event)
+        if command_text is None:
+            return
+
+        context = self._extract_roulette_group_context(event)
+        if context is None:
+            yield event.plain_result("未能识别 QQOfficial 群聊身份，无法使用轮盘。")
+            event.stop_event()
+            return
+
+        group_openid, platform_user_id = context
+        session_id = self._roulette_session_id(event, group_openid)
+        lock = self.roulette_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            try:
+                message, game, with_keyboard = await self._handle_roulette_command(
+                    command_text,
+                    group_openid=group_openid,
+                    platform_user_id=platform_user_id,
+                    session_id=session_id,
+                    event=event,
+                )
+            except (RouletteGameError, ValueError) as exc:
+                message = str(exc)
+                game = self.roulette_games.get(session_id)
+                with_keyboard = game is not None
+            except Exception as exc:
+                logger.exception("[QQOfficialUtil] 轮盘指令处理失败: %s", exc)
+                message = f"轮盘处理失败：{exc}"
+                game = self.roulette_games.get(session_id)
+                with_keyboard = False
+
+        async for result in self._send_qqofficial_group_markdown(
+            event,
+            command_name="qqofficial_roulette",
+            payload=_build_roulette_message_payload(
+                message,
+                game,
+                with_keyboard=with_keyboard,
+            ),
+        ):
+            yield result
+        event.stop_event()
+
     @filter.command("qqofficial_debug")
     async def qqofficial_debug(self, event: AstrMessageEvent):
         if not _is_qqofficial_message_event(event):
@@ -978,6 +1160,241 @@ class QQOfficialUtilPlugin(Star):
         )
         yield event.plain_result("你按了 B")
         event.stop_event()
+
+    async def _handle_roulette_command(
+        self,
+        command_text: str,
+        *,
+        group_openid: str,
+        platform_user_id: str,
+        session_id: str,
+        event: AstrMessageEvent,
+    ) -> tuple[str, RouletteGame | None, bool]:
+        stripped_command = command_text.strip()
+        if not stripped_command.startswith(ROULETTE_COMMAND_PREFIX):
+            return self._roulette_help_text(), self.roulette_games.get(session_id), False
+        remainder = stripped_command[len(ROULETTE_COMMAND_PREFIX) :].strip()
+        parts = remainder.split()
+        action = parts[0] if parts else "帮助"
+        args = parts[1:]
+
+        if action in {"帮助", "help"}:
+            return self._roulette_help_text(), self.roulette_games.get(session_id), False
+        if action in {"绑定", "改名"}:
+            if not args:
+                raise ValueError(f"请提供昵称，例如：轮盘{action} 玩家名")
+            display_name = validate_display_name(" ".join(args))
+            profile = await self.roulette_user_repo.upsert_profile(
+                group_openid,
+                platform_user_id,
+                display_name,
+            )
+            game = self.roulette_games.get(session_id)
+            if game:
+                player = game.get_player(platform_user_id)
+                if player:
+                    player.display_name = profile.display_name
+            return f"已绑定轮盘昵称：{profile.display_name}", game, game is not None
+        if action == "我的名字":
+            profile = await self.roulette_user_repo.get_profile(
+                group_openid,
+                platform_user_id,
+            )
+            if profile:
+                return f"你当前的轮盘昵称是：{profile.display_name}", self.roulette_games.get(session_id), False
+            fallback = await self.roulette_user_repo.resolve_display_name(
+                group_openid,
+                platform_user_id,
+            )
+            return f"你还没有绑定昵称，当前会显示为：{fallback}", self.roulette_games.get(session_id), False
+
+        if action == "创建":
+            if session_id in self.roulette_games and self.roulette_games[session_id].phase != "ended":
+                raise RouletteGameError("本群已经有一局轮盘。")
+            display_name = await self.roulette_user_repo.resolve_display_name(
+                group_openid,
+                platform_user_id,
+            )
+            game = RouletteGame(group_openid=group_openid, owner_id=platform_user_id)
+            game.add_player(platform_user_id, display_name)
+            self.roulette_games[session_id] = game
+            hint = self._roulette_bind_hint(display_name, platform_user_id)
+            return (
+                f"{display_name} 创建了恶魔轮盘房间（1/{MAX_PLAYERS}）。\n"
+                "发送“轮盘加入”加入，房主发送“轮盘开始”开始。\n"
+                f"{hint}",
+                game,
+                True,
+            )
+
+        game = self.roulette_games.get(session_id)
+        if not game or game.phase == "ended":
+            raise RouletteGameError("本群当前没有进行中的轮盘。请先发送：轮盘创建")
+
+        if action == "加入":
+            display_name = await self.roulette_user_repo.resolve_display_name(
+                group_openid,
+                platform_user_id,
+            )
+            result = game.add_player(platform_user_id, display_name)
+            hint = self._roulette_bind_hint(display_name, platform_user_id)
+            return f"{result.message}\n{hint}", game, True
+        if action == "开始":
+            result = game.start(platform_user_id)
+            return f"{result.message}\n\n{game.format_status()}", game, True
+        if action == "状态":
+            return game.format_status(), game, True
+        if action == "结束":
+            if not self._can_end_roulette(event, game, platform_user_id):
+                raise RouletteGameError("只有房主或管理员可以结束本局。")
+            self.roulette_games.pop(session_id, None)
+            return "本群轮盘已结束。", None, False
+        if action == "开枪":
+            if not args:
+                raise RouletteGameError("请指定目标编号或“自己”，例如：轮盘开枪 自己")
+            result = game.shoot(platform_user_id, args[0])
+            if result.ended:
+                self.roulette_games.pop(session_id, None)
+            return (
+                f"{result.message}\n\n{game.format_status()}",
+                game if not result.ended else None,
+                not result.ended,
+            )
+        if action == "道具":
+            if not args:
+                raise RouletteGameError("请指定道具名，例如：轮盘道具 啤酒")
+            target_number = None
+            if len(args) >= 2:
+                try:
+                    target_number = int(args[1])
+                except ValueError as exc:
+                    raise RouletteGameError("目标请使用玩家编号。") from exc
+            result = game.use_item(platform_user_id, args[0], target_number)
+            if result.ended:
+                self.roulette_games.pop(session_id, None)
+            return (
+                f"{result.message}\n\n{game.format_status()}",
+                game if not result.ended else None,
+                not result.ended,
+            )
+
+        raise RouletteGameError("未知轮盘指令。发送“轮盘帮助”查看用法。")
+
+    async def _send_qqofficial_group_markdown(
+        self,
+        event: AstrMessageEvent,
+        *,
+        command_name: str,
+        payload: dict[str, Any],
+    ):
+        if not _is_qqofficial_message_event(event):
+            yield event.plain_result("该指令仅支持 QQOfficial 群聊。")
+            return
+        raw_message = getattr(event.message_obj, "raw_message", None)
+        group_openid = self._extract_group_openid(event)
+        if raw_message is None or not group_openid:
+            yield event.plain_result(payload["markdown"]["content"])
+            return
+        _add_passive_reply_context(
+            payload,
+            msg_id=_extract_message_reference_id(raw_message, event.message_obj),
+            msg_seq=getattr(raw_message, "msg_seq", None),
+        )
+        logger.info(
+            "[QQOfficialUtil] %s 发送轮盘群聊 payload: %s",
+            command_name,
+            _debug_json(payload),
+        )
+        try:
+            await event.bot.api.post_group_message(
+                group_openid=group_openid,
+                **payload,
+            )
+        except Exception as exc:
+            logger.exception("[QQOfficialUtil] %s 发送轮盘消息失败: %s", command_name, exc)
+            yield event.plain_result(f"发送轮盘消息失败：{exc}")
+
+    def _extract_roulette_command_text(self, event: AstrMessageEvent) -> str | None:
+        if event.get_platform_name() not in QQOFFICIAL_PLATFORMS:
+            return None
+        if not self._starts_with_bot_mention(event):
+            return None
+        text = event.get_message_str() or ""
+        stripped = text.strip()
+        if stripped.startswith(ROULETTE_COMMAND_PREFIX):
+            return stripped
+        return None
+
+    def _extract_roulette_group_context(
+        self,
+        event: AstrMessageEvent,
+    ) -> tuple[str, str] | None:
+        group_openid = self._extract_group_openid(event)
+        platform_user_id = self._extract_platform_user_id(event)
+        if not group_openid or not platform_user_id:
+            logger.warning(
+                "[QQOfficialUtil] 轮盘身份解析失败: group_openid=%r, platform_user_id=%r",
+                group_openid,
+                platform_user_id,
+            )
+            return None
+        return group_openid, platform_user_id
+
+    def _extract_group_openid(self, event: AstrMessageEvent) -> str | None:
+        raw_message = getattr(event.message_obj, "raw_message", None)
+        return _first_non_empty_str(
+            getattr(raw_message, "group_openid", None),
+            getattr(raw_message, "group_id", None),
+            event.get_group_id() if hasattr(event, "get_group_id") else None,
+        )
+
+    def _extract_platform_user_id(self, event: AstrMessageEvent) -> str | None:
+        raw_message = getattr(event.message_obj, "raw_message", None)
+        author = getattr(raw_message, "author", None)
+        return _first_non_empty_str(
+            getattr(author, "member_openid", None),
+            getattr(raw_message, "member_openid", None),
+            getattr(author, "user_openid", None),
+            event.get_sender_id() if hasattr(event, "get_sender_id") else None,
+        )
+
+    def _roulette_session_id(self, event: AstrMessageEvent, group_openid: str) -> str:
+        platform = event.get_platform_name() if hasattr(event, "get_platform_name") else "qq_official"
+        return f"{platform}:{group_openid}"
+
+    def _roulette_bind_hint(self, display_name: str, platform_user_id: str) -> str:
+        if display_name == f"玩家_{platform_user_id[-6:]}":
+            return "提示：可发送“轮盘绑定 昵称”设置群内显示名。"
+        return ""
+
+    def _roulette_help_text(self) -> str:
+        return (
+            "恶魔轮盘指令：\n"
+            "轮盘绑定 昵称 / 轮盘我的名字 / 轮盘改名 新昵称\n"
+            "轮盘创建 / 轮盘加入 / 轮盘开始 / 轮盘状态 / 轮盘结束\n"
+            "轮盘开枪 自己 / 轮盘开枪 编号\n"
+            "轮盘道具 啤酒|香烟|手锯|换向器 / 轮盘道具 手铐 编号"
+        )
+
+    def _can_end_roulette(
+        self,
+        event: AstrMessageEvent,
+        game: RouletteGame,
+        platform_user_id: str,
+    ) -> bool:
+        if platform_user_id == game.owner_id:
+            return True
+        for attr in ("is_admin", "is_group_admin", "is_group_owner"):
+            checker = getattr(event, attr, None)
+            if callable(checker):
+                try:
+                    if checker():
+                        return True
+                except TypeError:
+                    continue
+            elif checker:
+                return True
+        return False
 
     def _extract_box_command_text(self, event: AstrMessageEvent) -> str | None:
         if event.get_platform_name() not in QQOFFICIAL_PLATFORMS:
@@ -1430,4 +1847,4 @@ class QQOfficialUtilPlugin(Star):
         return max(minimum, min(maximum, value))
 
     async def terminate(self):
-        pass
+        await self.roulette_db.close()
