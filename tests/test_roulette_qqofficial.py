@@ -97,7 +97,7 @@ def test_roulette_keyboard_uses_command_buttons_with_limits():
     assert any(button["action"]["data"] == "轮盘道具 啤酒" for button in buttons)
 
 
-def test_roulette_keyboard_waiting_room_only_join_and_leave():
+def test_roulette_keyboard_waiting_room_join_leave_start():
     module = load_plugin_module()
     game = module.RouletteGame(group_openid="group-openid", owner_id="u1")
     game.add_player("u1", "\u73a9\u5bb61")
@@ -108,6 +108,12 @@ def test_roulette_keyboard_waiting_room_only_join_and_leave():
     assert [button["action"]["data"] for button in buttons] == [
         "轮盘加入",
         "轮盘退出",
+        "轮盘开始",
+    ]
+    assert [button["render_data"]["label"] for button in buttons] == [
+        "加入",
+        "退出",
+        "开始",
     ]
     assert not any(button["id"].startswith("roulette_item_") for button in buttons)
     assert not any(button["action"]["data"] == "轮盘状态" for button in buttons)
@@ -237,3 +243,32 @@ def test_roulette_leave_removes_player_from_waiting_room():
     assert returned_game is game
     assert with_keyboard is True
     assert [player.user_id for player in game.players] == ["u1"]
+
+
+def test_non_owner_start_message_has_no_keyboard():
+    module = load_plugin_module()
+    plugin = object.__new__(module.QQOfficialUtilPlugin)
+    session_id = "qq_official:group-openid"
+    game = module.RouletteGame(group_openid="group-openid", owner_id="u1")
+    game.add_player("u1", "\u623f\u4e3b")
+    game.add_player("u2", "\u73a9\u5bb62")
+    plugin.roulette_games = {session_id: game}
+    plugin.roulette_user_repo = SimpleNamespace()
+    event = FakeEvent(
+        module,
+        text=f"{module.ROULETTE_COMMAND_PREFIX}\u5f00\u59cb",
+    )
+
+    message, returned_game, with_keyboard = __import__("asyncio").run(
+        plugin._handle_roulette_command(
+            f"{module.ROULETTE_COMMAND_PREFIX}\u5f00\u59cb",
+            group_openid="group-openid",
+            platform_user_id="u2",
+            session_id=session_id,
+            event=event,
+        )
+    )
+
+    assert message == "\u53ea\u6709\u623f\u4e3b\u53ef\u4ee5\u5f00\u59cb\u672c\u5c40\u3002"
+    assert returned_game is game
+    assert with_keyboard is False

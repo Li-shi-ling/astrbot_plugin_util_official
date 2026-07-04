@@ -342,13 +342,18 @@ def _build_roulette_keyboard(game: RouletteGame | None) -> qinline.Keyboard:
                         "buttons": [
                             _build_roulette_button(
                                 "roulette_join",
-                                "加入游戏",
+                                "加入",
                                 "轮盘加入",
                             ),
                             _build_roulette_button(
                                 "roulette_leave",
-                                "退出游戏",
+                                "退出",
                                 "轮盘退出",
+                            ),
+                            _build_roulette_button(
+                                "roulette_start",
+                                "开始",
+                                "轮盘开始",
                             ),
                         ]
                     }
@@ -1317,6 +1322,8 @@ class QQOfficialUtilPlugin(Star):
                 True,
             )
         if action == "开始":
+            if platform_user_id != game.owner_id:
+                return "只有房主可以开始本局。", game, False
             result = game.start(platform_user_id)
             return f"{result.message}\n\n{game.format_status()}", game, True
         if action == "状态":
