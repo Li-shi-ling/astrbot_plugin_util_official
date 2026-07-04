@@ -384,9 +384,41 @@ def _build_roulette_message_payload(
 ) -> dict[str, Any]:
     return {
         "msg_type": 2,
-        "markdown": MarkdownPayload(content=text or "轮盘"),
+        "markdown": MarkdownPayload(content=_format_roulette_markdown(text or "轮盘")),
         "keyboard": _build_roulette_keyboard(game) if with_keyboard else None,
     }
+
+
+def _format_roulette_markdown(text: str) -> str:
+    if not str(text or "").strip() or str(text).strip() == "轮盘":
+        return "轮盘"
+    lines = str(text).splitlines()
+    formatted: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            formatted.append("")
+            continue
+        if stripped in {"恶魔轮盘状态", "恶魔轮盘指令：", "恶魔轮盘指令:"}:
+            formatted.append(f"## {stripped.rstrip('：:')}")
+        elif stripped.startswith("当前弹队列："):
+            formatted.append(f"**当前弹队列**：{stripped.removeprefix('当前弹队列：')}")
+        elif stripped.startswith("阶段："):
+            formatted.append(f"**阶段**：{stripped.removeprefix('阶段：')}")
+        elif stripped.startswith("当前行动："):
+            formatted.append(f"> **当前行动**：{stripped.removeprefix('当前行动：')}")
+        elif stripped.startswith("轮到 "):
+            formatted.append(f"> **{stripped}**")
+        elif re.match(r"^\d+\. ", stripped):
+            number, rest = stripped.split(". ", 1)
+            formatted.append(f"- `{number}` {rest}")
+        elif stripped.startswith("轮盘"):
+            formatted.append(f"- `{stripped}`")
+        elif stripped.startswith("提示："):
+            formatted.append(f"> {stripped}")
+        else:
+            formatted.append(stripped)
+    return "\n".join(formatted)
 
 
 def _build_button_reply_payload(text: str) -> dict[str, Any]:
