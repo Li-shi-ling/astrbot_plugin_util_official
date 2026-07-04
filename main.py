@@ -362,7 +362,7 @@ def _build_roulette_keyboard(game: RouletteGame | None) -> qinline.Keyboard:
             current_items = set(game.current_player().items)
         item_buttons: list[qinline.Button] = []
         for item_name in ROULETTE_NO_TARGET_BUTTON_ITEMS:
-            if game.phase != "playing" or item_name in current_items:
+            if item_name in current_items:
                 item_buttons.append(
                     _build_roulette_button(
                         f"roulette_item_{item_name}",
@@ -1194,7 +1194,7 @@ class QQOfficialUtilPlugin(Star):
                 player = game.get_player(platform_user_id)
                 if player:
                     player.display_name = profile.display_name
-            return f"已绑定轮盘昵称：{profile.display_name}", game, game is not None
+            return f"已绑定轮盘昵称：{profile.display_name}", game, False
         if action == "我的名字":
             profile = await self.roulette_user_repo.get_profile(
                 group_openid,
