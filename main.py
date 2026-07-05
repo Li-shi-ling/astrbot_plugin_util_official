@@ -1093,9 +1093,7 @@ class QQOfficialUtilPlugin(Star):
             except (RouletteGameError, ValueError) as exc:
                 message = str(exc)
                 game = self.roulette_games.get(session_id)
-                with_keyboard = game is not None and not self._is_roulette_keyboardless_error_command(
-                    command_text
-                )
+                with_keyboard = False
             except Exception as exc:
                 logger.exception("[QQOfficialUtil] 轮盘指令处理失败: %s", exc)
                 message = f"轮盘处理失败：{exc}"

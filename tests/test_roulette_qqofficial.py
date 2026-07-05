@@ -393,11 +393,44 @@ def test_leave_after_start_error_has_no_keyboard():
         )
     except module.RouletteGameError as exc:
         message = str(exc)
-        with_keyboard = game is not None and not plugin._is_roulette_keyboardless_error_command(
-            f"{module.ROULETTE_COMMAND_PREFIX}\u9000\u51fa"
-        )
+        with_keyboard = False
     else:
         raise AssertionError("expected RouletteGameError")
 
     assert message == "\u672c\u5c40\u5df2\u7ecf\u5f00\u59cb\uff0c\u4e0d\u80fd\u9000\u51fa\u623f\u95f4\u3002"
+    assert with_keyboard is False
+
+
+def test_not_joined_action_error_has_no_keyboard():
+    module = load_plugin_module()
+    plugin = object.__new__(module.QQOfficialUtilPlugin)
+    session_id = "qq_official:group-openid"
+    game = module.RouletteGame(group_openid="group-openid", owner_id="u1")
+    game.add_player("u1", "\u623f\u4e3b")
+    game.add_player("u2", "\u73a9\u5bb62")
+    game.start("u1")
+    plugin.roulette_games = {session_id: game}
+    plugin.roulette_user_repo = SimpleNamespace()
+    event = FakeEvent(
+        module,
+        text=f"{module.ROULETTE_COMMAND_PREFIX}\u5f00\u67aa \u81ea\u5df1",
+    )
+
+    try:
+        __import__("asyncio").run(
+            plugin._handle_roulette_command(
+                f"{module.ROULETTE_COMMAND_PREFIX}\u5f00\u67aa \u81ea\u5df1",
+                group_openid="group-openid",
+                platform_user_id="u3",
+                session_id=session_id,
+                event=event,
+            )
+        )
+    except module.RouletteGameError as exc:
+        message = str(exc)
+        with_keyboard = False
+    else:
+        raise AssertionError("expected RouletteGameError")
+
+    assert message == "\u4f60\u8fd8\u6ca1\u6709\u52a0\u5165\u672c\u5c40\u3002"
     assert with_keyboard is False
