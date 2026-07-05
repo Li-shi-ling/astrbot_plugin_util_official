@@ -39,6 +39,7 @@ try:
         RouletteGame,
         RouletteGameError,
         RoulettePlayer,
+        RouletteSettings,
     )
 except ImportError:
     import sys
@@ -56,6 +57,7 @@ except ImportError:
         RouletteGame,
         RouletteGameError,
         RoulettePlayer,
+        RouletteSettings,
     )
 
 QQOFFICIAL_PLATFORMS = {"qq_official", "qq_official_webhook"}
@@ -409,11 +411,66 @@ def _build_roulette_message_payload(
     game: RouletteGame | None = None,
     *,
     with_keyboard: bool = True,
+    settings_keyboard: bool = False,
+    settings: RouletteSettings | None = None,
 ) -> dict[str, Any]:
+    keyboard = None
+    if with_keyboard:
+        keyboard = (
+            _build_roulette_settings_keyboard(settings or (game.settings if game else None))
+            if settings_keyboard
+            else _build_roulette_keyboard(game)
+        )
     return {
         "msg_type": 2,
         "markdown": MarkdownPayload(content=_format_roulette_markdown(text or "轮盘")),
-        "keyboard": _build_roulette_keyboard(game) if with_keyboard else None,
+        "keyboard": keyboard,
+    }
+
+
+def _build_roulette_settings_keyboard(settings: RouletteSettings | None) -> qinline.Keyboard:
+    settings = settings or RouletteSettings()
+    settings.normalize()
+    random_shell_target = "否" if settings.random_shell_count else "是"
+    random_hp_target = "否" if settings.random_hp else "是"
+    return {
+        "content": {
+            "rows": [
+                {
+                    "buttons": [
+                        _build_roulette_button("roulette_set_shell_max", "子弹上限", "轮盘设置 子弹上限 [数量]"),
+                        _build_roulette_button("roulette_set_shell_min", "子弹下限", "轮盘设置 子弹下限 [数量]"),
+                        _build_roulette_button("roulette_set_items", "道具数量", "轮盘设置 道具数量 [数量]"),
+                    ]
+                },
+                {
+                    "buttons": [
+                        _build_roulette_button("roulette_set_hp_max", "血量上限", "轮盘设置 血量上限 [数量]"),
+                        _build_roulette_button("roulette_set_hp_min", "血量下限", "轮盘设置 血量下限 [数量]"),
+                    ]
+                },
+                {
+                    "buttons": [
+                        _build_roulette_button(
+                            "roulette_set_random_shell",
+                            f"随机子弹：{random_shell_target}",
+                            f"轮盘设置 随机子弹 {random_shell_target}",
+                        ),
+                        _build_roulette_button(
+                            "roulette_set_random_hp",
+                            f"随机血量：{random_hp_target}",
+                            f"轮盘设置 随机血量 {random_hp_target}",
+                        ),
+                    ]
+                },
+                {
+                    "buttons": [
+                        _build_roulette_button("roulette_room_status", "房间", "轮盘状态"),
+                        _build_roulette_button("roulette_start", "开始", "轮盘开始"),
+                    ]
+                },
+            ]
+        }
     }
 
 
@@ -427,7 +484,7 @@ def _format_roulette_markdown(text: str) -> str:
         if not stripped:
             formatted.append("")
             continue
-        if stripped in {"恶魔轮盘状态", "恶魔轮盘指令：", "恶魔轮盘指令:"}:
+        if stripped in {"恶魔轮盘状态", "恶魔轮盘指令：", "恶魔轮盘指令:", "轮盘设置"}:
             formatted.append(f"## {stripped.rstrip('：:')}")
         elif stripped.startswith("当前弹队列："):
             formatted.append(f"**当前弹队列**：{stripped.removeprefix('当前弹队列：')}")
@@ -787,6 +844,7 @@ class QQOfficialUtilPlugin(Star):
         self.location_pool: list[str] = []
         self.search_region_pool: list[dict[str, str]] = []
         self._interaction_hook_installed = False
+        self.roulette_settings = self._load_roulette_settings_from_config()
         self.roulette_db_path = Path(StarTools.get_data_dir()) / "roulette.db"
         self.roulette_db = RouletteDBManager(self.roulette_db_path)
         self.roulette_user_repo = RouletteUserRepo(self.roulette_db)
@@ -1035,7 +1093,9 @@ class QQOfficialUtilPlugin(Star):
             except (RouletteGameError, ValueError) as exc:
                 message = str(exc)
                 game = self.roulette_games.get(session_id)
-                with_keyboard = game is not None
+                with_keyboard = game is not None and not self._is_roulette_keyboardless_error_command(
+                    command_text
+                )
             except Exception as exc:
                 logger.exception("[QQOfficialUtil] 轮盘指令处理失败: %s", exc)
                 message = f"轮盘处理失败：{exc}"
@@ -1049,6 +1109,8 @@ class QQOfficialUtilPlugin(Star):
                 message,
                 game,
                 with_keyboard=with_keyboard,
+                settings_keyboard=self._is_roulette_settings_command(command_text),
+                settings=self.roulette_settings,
             ),
         ):
             yield result
@@ -1268,6 +1330,14 @@ class QQOfficialUtilPlugin(Star):
             )
             return f"你还没有绑定昵称，当前会显示为：{fallback}", self.roulette_games.get(session_id), False
 
+        if action == "设置":
+            message = self._handle_roulette_settings_command(self.roulette_settings, args)
+            self._save_roulette_settings_to_config()
+            game = self.roulette_games.get(session_id)
+            if game and game.phase == "waiting":
+                game.settings = dataclasses.replace(self.roulette_settings)
+            return message, game, True
+
         if action == "创建":
             if session_id in self.roulette_games and self.roulette_games[session_id].phase != "ended":
                 raise RouletteGameError("本群已经有一局轮盘。")
@@ -1275,7 +1345,11 @@ class QQOfficialUtilPlugin(Star):
                 group_openid,
                 platform_user_id,
             )
-            game = RouletteGame(group_openid=group_openid, owner_id=platform_user_id)
+            game = RouletteGame(
+                group_openid=group_openid,
+                owner_id=platform_user_id,
+                settings=dataclasses.replace(self.roulette_settings),
+            )
             game.add_player(platform_user_id, display_name)
             self.roulette_games[session_id] = game
             hint = self._roulette_bind_hint(display_name, platform_user_id)
@@ -1409,6 +1483,23 @@ class QQOfficialUtilPlugin(Star):
             return stripped
         return None
 
+    def _is_roulette_keyboardless_error_command(self, command_text: str) -> bool:
+        stripped = str(command_text or "").strip()
+        if not stripped.startswith(ROULETTE_COMMAND_PREFIX):
+            return False
+        remainder = stripped[len(ROULETTE_COMMAND_PREFIX) :].strip()
+        parts = remainder.split()
+        action = parts[0] if parts else ""
+        return action in {"绑定", "改名", "退出"}
+
+    def _is_roulette_settings_command(self, command_text: str) -> bool:
+        stripped = str(command_text or "").strip()
+        if not stripped.startswith(ROULETTE_COMMAND_PREFIX):
+            return False
+        remainder = stripped[len(ROULETTE_COMMAND_PREFIX) :].strip()
+        parts = remainder.split()
+        return bool(parts) and parts[0] == "设置"
+
     def _extract_roulette_group_context(
         self,
         event: AstrMessageEvent,
@@ -1455,10 +1546,112 @@ class QQOfficialUtilPlugin(Star):
         return (
             "恶魔轮盘指令：\n"
             "轮盘绑定 昵称 / 轮盘我的名字 / 轮盘改名 新昵称\n"
-            "轮盘创建 / 轮盘加入 / 轮盘退出 / 轮盘开始 / 轮盘状态 / 轮盘结束\n"
+            "轮盘创建 / 轮盘加入 / 轮盘退出 / 轮盘设置 / 轮盘开始 / 轮盘状态 / 轮盘结束\n"
             "轮盘开枪 自己 / 轮盘开枪 编号\n"
-            "轮盘道具 啤酒|香烟|手锯|换向器 / 轮盘道具 手铐 编号"
+            "轮盘道具 啤酒|香烟|手锯|换向器"
         )
+
+    def _handle_roulette_settings_command(self, settings: RouletteSettings, args: list[str]) -> str:
+        settings.normalize()
+        if not args:
+            return self._roulette_settings_text(settings)
+
+        field = args[0]
+        value = args[1] if len(args) >= 2 else None
+        if field in {"子弹上限", "子弹下限", "道具数量", "血量上限", "血量下限"}:
+            if value is None or value == "[数量]":
+                raise RouletteGameError(f"请把 [数量] 改成数字，例如：轮盘设置 {field} 4")
+            try:
+                number = int(value)
+            except ValueError as exc:
+                raise RouletteGameError("设置数量必须是整数。") from exc
+            if field == "子弹上限":
+                settings.shell_count_max = max(2, number)
+            elif field == "子弹下限":
+                settings.shell_count_min = max(2, number)
+            elif field == "道具数量":
+                settings.item_count_per_reload = max(0, min(8, number))
+            elif field == "血量上限":
+                settings.hp_max = max(1, number)
+            elif field == "血量下限":
+                settings.hp_min = max(1, number)
+            settings.normalize()
+            return f"已更新：{field} = {number}\n\n{self._roulette_settings_text(settings)}"
+
+        if field in {"随机子弹", "随机血量"}:
+            if value not in {"是", "否"}:
+                raise RouletteGameError(f"请使用：轮盘设置 {field} 是/否")
+            enabled = value == "是"
+            if field == "随机子弹":
+                settings.random_shell_count = enabled
+            else:
+                settings.random_hp = enabled
+            settings.normalize()
+            return f"已更新：{field} = {value}\n\n{self._roulette_settings_text(settings)}"
+
+        raise RouletteGameError("未知设置项。发送“轮盘设置”查看可用设置。")
+
+    def _roulette_settings_text(self, settings: RouletteSettings) -> str:
+        settings.normalize()
+        return (
+            "轮盘设置\n"
+            f"子弹上限：{settings.shell_count_max}\n"
+            f"子弹下限：{settings.shell_count_min}\n"
+            f"随机子弹数：{'是' if settings.random_shell_count else '否'}\n"
+            f"每轮刷新道具数量：{settings.item_count_per_reload}\n"
+            f"血量上限：{settings.hp_max}\n"
+            f"血量下限：{settings.hp_min}\n"
+            f"随机开局血量：{'是' if settings.random_hp else '否'}"
+        )
+
+    def _load_roulette_settings_from_config(self) -> RouletteSettings:
+        raw = self._get_config_section("roulette_settings")
+        settings = RouletteSettings(
+            shell_count_max=self._config_int(raw, "shell_count_max", 4),
+            shell_count_min=self._config_int(raw, "shell_count_min", 2),
+            random_shell_count=self._config_bool(raw, "random_shell_count", False),
+            item_count_per_reload=self._config_int(raw, "item_count_per_reload", 1),
+            hp_max=self._config_int(raw, "hp_max", 2),
+            hp_min=self._config_int(raw, "hp_min", 1),
+            random_hp=self._config_bool(raw, "random_hp", False),
+        )
+        settings.normalize()
+        return settings
+
+    def _save_roulette_settings_to_config(self) -> None:
+        data = {
+            "shell_count_max": self.roulette_settings.shell_count_max,
+            "shell_count_min": self.roulette_settings.shell_count_min,
+            "random_shell_count": self.roulette_settings.random_shell_count,
+            "item_count_per_reload": self.roulette_settings.item_count_per_reload,
+            "hp_max": self.roulette_settings.hp_max,
+            "hp_min": self.roulette_settings.hp_min,
+            "random_hp": self.roulette_settings.random_hp,
+        }
+        try:
+            self.config["roulette_settings"] = data
+            if hasattr(self.config, "save_config"):
+                self.config.save_config()
+        except Exception:
+            logger.warning("[QQOfficialUtil] 无法写回轮盘设置到插件配置对象。")
+
+    def _get_config_section(self, key: str) -> dict[str, Any]:
+        section = self.config.get(key, {}) if hasattr(self.config, "get") else {}
+        return section if isinstance(section, dict) else {}
+
+    def _config_int(self, section: dict[str, Any], key: str, default: int) -> int:
+        try:
+            return int(section.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _config_bool(self, section: dict[str, Any], key: str, default: bool) -> bool:
+        value = section.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on", "是"}
+        return bool(value)
 
     def _can_end_roulette(
         self,

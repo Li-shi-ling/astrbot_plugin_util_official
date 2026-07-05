@@ -157,6 +157,80 @@ def test_roulette_payload_formats_text_as_markdown():
     assert "- `1` Alice" in content
 
 
+def test_roulette_settings_keyboard_uses_placeholders_and_target_state():
+    module = load_plugin_module()
+    settings = module.RouletteSettings(random_shell_count=False, random_hp=True)
+
+    keyboard = module._build_roulette_settings_keyboard(settings)
+    buttons = [button for row in keyboard["content"]["rows"] for button in row["buttons"]]
+
+    assert any(button["action"]["data"] == "轮盘设置 子弹上限 [数量]" for button in buttons)
+    assert any(button["action"]["data"] == "轮盘设置 道具数量 [数量]" for button in buttons)
+    assert any(button["render_data"]["label"] == "随机子弹：是" for button in buttons)
+    assert any(button["render_data"]["label"] == "随机血量：否" for button in buttons)
+
+
+def test_roulette_settings_command_works_without_room_and_updates_defaults():
+    module = load_plugin_module()
+    plugin = object.__new__(module.QQOfficialUtilPlugin)
+    plugin.roulette_games = {}
+    plugin.roulette_settings = module.RouletteSettings()
+    plugin.config = {}
+    session_id = "qq_official:group-openid"
+    event = FakeEvent(
+        module,
+        text=f"{module.ROULETTE_COMMAND_PREFIX}\u8bbe\u7f6e \u5b50\u5f39\u4e0a\u9650 6",
+    )
+
+    message, returned_game, with_keyboard = __import__("asyncio").run(
+        plugin._handle_roulette_command(
+            f"{module.ROULETTE_COMMAND_PREFIX}\u8bbe\u7f6e \u5b50\u5f39\u4e0a\u9650 6",
+            group_openid="group-openid",
+            platform_user_id="member-openid",
+            session_id=session_id,
+            event=event,
+        )
+    )
+
+    assert "\u5b50\u5f39\u4e0a\u9650" in message
+    assert plugin.roulette_settings.shell_count_max == 6
+    assert plugin.config["roulette_settings"]["shell_count_max"] == 6
+    assert returned_game is None
+    assert with_keyboard is True
+
+
+def test_roulette_create_copies_public_default_settings():
+    module = load_plugin_module()
+    plugin = object.__new__(module.QQOfficialUtilPlugin)
+    plugin.roulette_games = {}
+    plugin.roulette_settings = module.RouletteSettings(shell_count_max=7, hp_max=4)
+
+    class FakeRepo:
+        async def resolve_display_name(self, group_openid, platform_user_id):
+            return "\u73a9\u5bb6"
+
+    plugin.roulette_user_repo = FakeRepo()
+    session_id = "qq_official:group-openid"
+    event = FakeEvent(module, text=f"{module.ROULETTE_COMMAND_PREFIX}\u521b\u5efa")
+
+    message, game, with_keyboard = __import__("asyncio").run(
+        plugin._handle_roulette_command(
+            f"{module.ROULETTE_COMMAND_PREFIX}\u521b\u5efa",
+            group_openid="group-openid",
+            platform_user_id="member-openid",
+            session_id=session_id,
+            event=event,
+        )
+    )
+
+    assert "\u521b\u5efa" in message
+    assert game is plugin.roulette_games[session_id]
+    assert game.settings.shell_count_max == 7
+    assert game.settings.hp_max == 4
+    assert game.settings is not plugin.roulette_settings
+    assert with_keyboard is True
+
+
 def test_roulette_command_requires_bot_mention_and_prefix():
     module = load_plugin_module()
     plugin = object.__new__(module.QQOfficialUtilPlugin)
@@ -215,6 +289,24 @@ def test_roulette_bind_does_not_return_keyboard_when_room_exists():
     assert with_keyboard is False
 
 
+def test_roulette_profile_commands_are_keyboardless_on_errors():
+    module = load_plugin_module()
+    plugin = object.__new__(module.QQOfficialUtilPlugin)
+
+    assert plugin._is_roulette_keyboardless_error_command(
+        f"{module.ROULETTE_COMMAND_PREFIX}\u7ed1\u5b9a"
+    )
+    assert plugin._is_roulette_keyboardless_error_command(
+        f"{module.ROULETTE_COMMAND_PREFIX}\u6539\u540d \u65b0\u540d"
+    )
+    assert plugin._is_roulette_keyboardless_error_command(
+        f"{module.ROULETTE_COMMAND_PREFIX}\u9000\u51fa"
+    )
+    assert not plugin._is_roulette_keyboardless_error_command(
+        f"{module.ROULETTE_COMMAND_PREFIX}\u52a0\u5165"
+    )
+
+
 def test_roulette_leave_removes_player_from_waiting_room():
     module = load_plugin_module()
     plugin = object.__new__(module.QQOfficialUtilPlugin)
@@ -271,4 +363,41 @@ def test_non_owner_start_message_has_no_keyboard():
 
     assert message == "\u53ea\u6709\u623f\u4e3b\u53ef\u4ee5\u5f00\u59cb\u672c\u5c40\u3002"
     assert returned_game is game
+    assert with_keyboard is False
+
+
+def test_leave_after_start_error_has_no_keyboard():
+    module = load_plugin_module()
+    plugin = object.__new__(module.QQOfficialUtilPlugin)
+    session_id = "qq_official:group-openid"
+    game = module.RouletteGame(group_openid="group-openid", owner_id="u1")
+    game.add_player("u1", "\u623f\u4e3b")
+    game.add_player("u2", "\u73a9\u5bb62")
+    game.start("u1")
+    plugin.roulette_games = {session_id: game}
+    plugin.roulette_user_repo = SimpleNamespace()
+    event = FakeEvent(
+        module,
+        text=f"{module.ROULETTE_COMMAND_PREFIX}\u9000\u51fa",
+    )
+
+    try:
+        __import__("asyncio").run(
+            plugin._handle_roulette_command(
+                f"{module.ROULETTE_COMMAND_PREFIX}\u9000\u51fa",
+                group_openid="group-openid",
+                platform_user_id="u2",
+                session_id=session_id,
+                event=event,
+            )
+        )
+    except module.RouletteGameError as exc:
+        message = str(exc)
+        with_keyboard = game is not None and not plugin._is_roulette_keyboardless_error_command(
+            f"{module.ROULETTE_COMMAND_PREFIX}\u9000\u51fa"
+        )
+    else:
+        raise AssertionError("expected RouletteGameError")
+
+    assert message == "\u672c\u5c40\u5df2\u7ecf\u5f00\u59cb\uff0c\u4e0d\u80fd\u9000\u51fa\u623f\u95f4\u3002"
     assert with_keyboard is False

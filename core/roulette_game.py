@@ -7,16 +7,15 @@ from dataclasses import dataclass, field
 MIN_PLAYERS = 2
 MAX_PLAYERS = 10
 DEFAULT_HP = 2
+DEFAULT_SHELL_COUNT = 4
 SHELL_LIVE = "live"
 SHELL_BLANK = "blank"
 ITEM_BEER = "啤酒"
 ITEM_CIGARETTE = "香烟"
 ITEM_SAW = "手锯"
-ITEM_HANDCUFFS = "手铐"
 ITEM_INVERTER = "换向器"
-ITEM_POOL = [ITEM_BEER, ITEM_CIGARETTE, ITEM_SAW, ITEM_HANDCUFFS, ITEM_INVERTER]
+ITEM_POOL = [ITEM_BEER, ITEM_CIGARETTE, ITEM_SAW, ITEM_INVERTER]
 NO_TARGET_ITEMS = {ITEM_BEER, ITEM_CIGARETTE, ITEM_SAW, ITEM_INVERTER}
-TARGET_ITEMS = {ITEM_HANDCUFFS}
 
 
 class RouletteGameError(ValueError):
@@ -30,7 +29,6 @@ class RoulettePlayer:
     hp: int = DEFAULT_HP
     max_hp: int = DEFAULT_HP
     items: list[str] = field(default_factory=list)
-    skip_turns: int = 0
 
     @property
     def alive(self) -> bool:
@@ -44,10 +42,33 @@ class RouletteActionResult:
 
 
 @dataclass
+class RouletteSettings:
+    shell_count_max: int = DEFAULT_SHELL_COUNT
+    shell_count_min: int = 2
+    random_shell_count: bool = False
+    item_count_per_reload: int = 1
+    hp_max: int = DEFAULT_HP
+    hp_min: int = 1
+    random_hp: bool = False
+
+    def normalize(self) -> None:
+        self.shell_count_min = max(2, int(self.shell_count_min))
+        self.shell_count_max = max(2, int(self.shell_count_max))
+        if self.shell_count_max < self.shell_count_min:
+            self.shell_count_max = self.shell_count_min
+        self.item_count_per_reload = max(0, min(8, int(self.item_count_per_reload)))
+        self.hp_min = max(1, int(self.hp_min))
+        self.hp_max = max(1, int(self.hp_max))
+        if self.hp_max < self.hp_min:
+            self.hp_max = self.hp_min
+
+
+@dataclass
 class RouletteGame:
     group_openid: str
     owner_id: str
     rng: random.Random = field(default_factory=random.Random)
+    settings: RouletteSettings = field(default_factory=RouletteSettings)
     players: list[RoulettePlayer] = field(default_factory=list)
     phase: str = "waiting"
     current_index: int = 0
@@ -75,6 +96,7 @@ class RouletteGame:
             raise RouletteGameError("至少需要 2 名玩家才能开始。")
         self.phase = "playing"
         self.current_index = 0
+        self.apply_starting_hp()
         self.reload_shells(deal_items=True)
         current = self.current_player()
         return RouletteActionResult(
@@ -164,7 +186,7 @@ class RouletteGame:
         actor = self.require_playing_actor(actor_id)
         item_name = self.normalize_item_name(item_name)
         if item_name not in ITEM_POOL:
-            raise RouletteGameError("未知道具。可用：啤酒、香烟、手锯、手铐、换向器。")
+            raise RouletteGameError("未知道具。可用：啤酒、香烟、手锯、换向器。")
         if item_name not in actor.items:
             raise RouletteGameError(f"你没有道具：{item_name}")
 
@@ -190,15 +212,6 @@ class RouletteGame:
             self._consume_item(actor, item_name)
             self.next_live_damage = 2
             lines.append(f"{actor.display_name} 使用手锯，下一发实弹伤害变为 2。")
-        elif item_name == ITEM_HANDCUFFS:
-            if target_number is None:
-                raise RouletteGameError("手铐需要目标编号，例如：轮盘道具 手铐 2")
-            target = self.player_by_number(target_number)
-            if target.user_id == actor.user_id:
-                raise RouletteGameError("不能对自己使用手铐。")
-            self._consume_item(actor, item_name)
-            target.skip_turns += 1
-            lines.append(f"{actor.display_name} 使用手铐，{target.display_name} 将跳过下一次行动。")
         elif item_name == ITEM_INVERTER:
             self._consume_item(actor, item_name)
             if not self.shell_queue:
@@ -221,23 +234,38 @@ class RouletteGame:
             "锯": ITEM_SAW,
             "手锯": ITEM_SAW,
             "啤酒": ITEM_BEER,
-            "手铐": ITEM_HANDCUFFS,
-            "铐": ITEM_HANDCUFFS,
             "换向器": ITEM_INVERTER,
             "逆转器": ITEM_INVERTER,
         }
         return aliases.get(name.strip(), name.strip())
 
+    def apply_starting_hp(self) -> None:
+        self.settings.normalize()
+        for player in self.players:
+            hp = self.settings.hp_max
+            if self.settings.random_hp:
+                hp = self.rng.randint(self.settings.hp_min, self.settings.hp_max)
+            player.max_hp = hp
+            player.hp = hp
+
     def reload_shells(self, *, deal_items: bool) -> None:
-        alive_count = len(self.alive_players())
-        total = min(8, max(4, alive_count + 2))
+        self.settings.normalize()
+        total = self.settings.shell_count_max
+        if self.settings.random_shell_count:
+            total = self.rng.randint(
+                self.settings.shell_count_min,
+                self.settings.shell_count_max,
+            )
+        total = max(2, total)
         live_count = self.rng.randint(1, total - 1)
         blank_count = total - live_count
         self.shell_queue = [SHELL_LIVE] * live_count + [SHELL_BLANK] * blank_count
         self.rng.shuffle(self.shell_queue)
         if deal_items:
             for player in self.alive_players():
-                if len(player.items) < 8:
+                for _ in range(self.settings.item_count_per_reload):
+                    if len(player.items) >= 8:
+                        break
                     player.items.append(self.rng.choice(ITEM_POOL))
 
     def alive_players(self) -> list[RoulettePlayer]:
@@ -277,12 +305,6 @@ class RouletteGame:
             self.current_index = (self.current_index + 1) % len(self.players)
             candidate = self.players[self.current_index]
             if not candidate.alive:
-                if self.current_index == start:
-                    return
-                continue
-            if candidate.skip_turns > 0:
-                candidate.skip_turns -= 1
-                lines.append(f"{candidate.display_name} 被手铐限制，跳过本次行动。")
                 if self.current_index == start:
                     return
                 continue

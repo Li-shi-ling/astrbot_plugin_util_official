@@ -11,12 +11,13 @@ if str(PLUGIN_ROOT) not in sys.path:
 from core.roulette_game import (
     ITEM_BEER,
     ITEM_CIGARETTE,
-    ITEM_HANDCUFFS,
     ITEM_INVERTER,
+    ITEM_POOL,
     ITEM_SAW,
     MAX_PLAYERS,
     RouletteGame,
     RouletteGameError,
+    RouletteSettings,
     SHELL_BLANK,
     SHELL_LIVE,
 )
@@ -90,7 +91,6 @@ def test_eliminated_players_are_skipped():
 def test_items_mvp_effects():
     game = make_started_game()
     actor = game.current_player()
-    target = game.players[1]
 
     actor.items = [ITEM_BEER]
     game.shell_queue = [SHELL_LIVE, SHELL_BLANK]
@@ -109,11 +109,6 @@ def test_items_mvp_effects():
     assert game.next_live_damage == 2
     assert "下一发实弹伤害变为 2" in result.message
 
-    actor.items = [ITEM_HANDCUFFS]
-    result = game.use_item("u1", ITEM_HANDCUFFS, 2)
-    assert target.skip_turns == 1
-    assert "跳过下一次行动" in result.message
-
     actor.items = [ITEM_INVERTER]
     game.shell_queue = [SHELL_LIVE]
     result = game.use_item("u1", ITEM_INVERTER)
@@ -130,3 +125,31 @@ def test_status_does_not_reveal_current_shell_type():
     assert "实弹 1 / 空弹 1" in status
     assert "实弹\n" not in status
     assert "空弹\n" not in status
+
+
+def test_handcuffs_are_not_in_item_pool():
+    assert "手铐" not in ITEM_POOL
+
+
+def test_settings_control_shells_items_and_starting_hp():
+    game = RouletteGame(
+        group_openid="group",
+        owner_id="u1",
+        settings=RouletteSettings(
+            shell_count_max=6,
+            shell_count_min=5,
+            random_shell_count=False,
+            item_count_per_reload=2,
+            hp_max=3,
+            hp_min=1,
+            random_hp=False,
+        ),
+    )
+    game.add_player("u1", "玩家1")
+    game.add_player("u2", "玩家2")
+
+    game.start("u1")
+
+    assert len(game.shell_queue) == 6
+    assert all(player.hp == 3 and player.max_hp == 3 for player in game.players)
+    assert all(len(player.items) == 2 for player in game.players)
