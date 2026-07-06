@@ -13,9 +13,10 @@ SHELL_BLANK = "blank"
 ITEM_BEER = "啤酒"
 ITEM_CIGARETTE = "香烟"
 ITEM_SAW = "手锯"
+ITEM_MAGNIFIER = "放大镜"
 ITEM_INVERTER = "换向器"
-ITEM_POOL = [ITEM_BEER, ITEM_CIGARETTE, ITEM_SAW, ITEM_INVERTER]
-NO_TARGET_ITEMS = {ITEM_BEER, ITEM_CIGARETTE, ITEM_SAW, ITEM_INVERTER}
+ITEM_POOL = [ITEM_BEER, ITEM_CIGARETTE, ITEM_SAW, ITEM_MAGNIFIER, ITEM_INVERTER]
+NO_TARGET_ITEMS = {ITEM_BEER, ITEM_CIGARETTE, ITEM_SAW, ITEM_MAGNIFIER, ITEM_INVERTER}
 
 
 class RouletteGameError(ValueError):
@@ -46,7 +47,10 @@ class RouletteSettings:
     shell_count_max: int = DEFAULT_SHELL_COUNT
     shell_count_min: int = 2
     random_shell_count: bool = False
-    item_count_per_reload: int = 1
+    item_count_max: int = 1
+    item_count_min: int = 1
+    random_item_count: bool = False
+    item_inventory_max: int = 8
     hp_max: int = DEFAULT_HP
     hp_min: int = 1
     random_hp: bool = False
@@ -56,7 +60,11 @@ class RouletteSettings:
         self.shell_count_max = max(2, int(self.shell_count_max))
         if self.shell_count_max < self.shell_count_min:
             self.shell_count_max = self.shell_count_min
-        self.item_count_per_reload = max(0, min(8, int(self.item_count_per_reload)))
+        self.item_count_min = max(0, int(self.item_count_min))
+        self.item_count_max = max(0, int(self.item_count_max))
+        if self.item_count_max < self.item_count_min:
+            self.item_count_max = self.item_count_min
+        self.item_inventory_max = max(0, min(20, int(self.item_inventory_max)))
         self.hp_min = max(1, int(self.hp_min))
         self.hp_max = max(1, int(self.hp_max))
         if self.hp_max < self.hp_min:
@@ -171,7 +179,11 @@ class RouletteGame:
                 lines.append(f"{target_player.display_name} 淘汰。")
             self._advance_turn(lines)
         else:
+            saw_active = self.next_live_damage > 1
+            self.next_live_damage = 1
             lines.append("咔，空弹。")
+            if saw_active:
+                lines.append("手锯效果落空并消失。")
             if not target_self:
                 self._advance_turn(lines)
             else:
@@ -186,7 +198,7 @@ class RouletteGame:
         actor = self.require_playing_actor(actor_id)
         item_name = self.normalize_item_name(item_name)
         if item_name not in ITEM_POOL:
-            raise RouletteGameError("未知道具。可用：啤酒、香烟、手锯、换向器。")
+            raise RouletteGameError("未知道具。可用：啤酒、香烟、手锯、放大镜、换向器。")
         if item_name not in actor.items:
             raise RouletteGameError(f"你没有道具：{item_name}")
 
@@ -211,7 +223,14 @@ class RouletteGame:
                 raise RouletteGameError("手锯效果已经生效。")
             self._consume_item(actor, item_name)
             self.next_live_damage = 2
-            lines.append(f"{actor.display_name} 使用手锯，下一发实弹伤害变为 2。")
+            lines.append(f"{actor.display_name} 使用手锯，下一发子弹若为实弹，伤害 +1；若为空弹，效果消失。")
+        elif item_name == ITEM_MAGNIFIER:
+            self._consume_item(actor, item_name)
+            if not self.shell_queue:
+                self.reload_shells(deal_items=True)
+                lines.append("弹队列为空，已重新装填。")
+            shell_text = "实弹" if self.shell_queue[0] == SHELL_LIVE else "空弹"
+            lines.append(f"{actor.display_name} 使用放大镜，公开查看：下一发是{shell_text}。")
         elif item_name == ITEM_INVERTER:
             self._consume_item(actor, item_name)
             if not self.shell_queue:
@@ -234,6 +253,8 @@ class RouletteGame:
             "锯": ITEM_SAW,
             "手锯": ITEM_SAW,
             "啤酒": ITEM_BEER,
+            "镜": ITEM_MAGNIFIER,
+            "放大镜": ITEM_MAGNIFIER,
             "换向器": ITEM_INVERTER,
             "逆转器": ITEM_INVERTER,
         }
@@ -262,9 +283,15 @@ class RouletteGame:
         self.shell_queue = [SHELL_LIVE] * live_count + [SHELL_BLANK] * blank_count
         self.rng.shuffle(self.shell_queue)
         if deal_items:
+            item_count = self.settings.item_count_max
+            if self.settings.random_item_count:
+                item_count = self.rng.randint(
+                    self.settings.item_count_min,
+                    self.settings.item_count_max,
+                )
             for player in self.alive_players():
-                for _ in range(self.settings.item_count_per_reload):
-                    if len(player.items) >= 8:
+                for _ in range(item_count):
+                    if len(player.items) >= self.settings.item_inventory_max:
                         break
                     player.items.append(self.rng.choice(ITEM_POOL))
 

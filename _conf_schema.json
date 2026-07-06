@@ -42,11 +42,29 @@
         "default": false,
         "hint": "开启后会在子弹下限和子弹上限之间随机生成，至少为 2。"
       },
-      "item_count_per_reload": {
-        "description": "每轮刷新的道具数量",
+      "item_count_max": {
+        "description": "每轮道具刷新上限",
         "type": "int",
         "default": 1,
-        "hint": "每次装填时给每名存活玩家发放的道具数量；范围 0-8。"
+        "hint": "未开启随机道具刷新数时直接使用该值；每次装填所有存活玩家都会获得相同数量。"
+      },
+      "item_count_min": {
+        "description": "每轮道具刷新下限",
+        "type": "int",
+        "default": 1,
+        "hint": "开启随机道具刷新数时作为随机最小值；小于 0 会按 0 处理。"
+      },
+      "random_item_count": {
+        "description": "是否随机生成每轮道具刷新数",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后会在道具刷新下限和上限之间随机一次，所有存活玩家使用同一个刷新数量。"
+      },
+      "item_inventory_max": {
+        "description": "道具持有上限",
+        "type": "int",
+        "default": 8,
+        "hint": "每名玩家同时可持有的道具上限；范围 0-20。"
       },
       "hp_max": {
         "description": "用户最大血量",

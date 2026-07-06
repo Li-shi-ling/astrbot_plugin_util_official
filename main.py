@@ -34,6 +34,7 @@ try:
         ITEM_BEER,
         ITEM_CIGARETTE,
         ITEM_INVERTER,
+        ITEM_MAGNIFIER,
         ITEM_SAW,
         MAX_PLAYERS,
         RouletteGame,
@@ -52,6 +53,7 @@ except ImportError:
         ITEM_BEER,
         ITEM_CIGARETTE,
         ITEM_INVERTER,
+        ITEM_MAGNIFIER,
         ITEM_SAW,
         MAX_PLAYERS,
         RouletteGame,
@@ -91,7 +93,7 @@ CALLBACK_BUTTON_A_VISITED_LABEL = "已回调 A"
 CALLBACK_BUTTON_B_VISITED_LABEL = "已回调 B"
 QQOFFICIAL_INTERACTION_INTENT = 1 << 26
 ROULETTE_COMMAND_PREFIX = "轮盘"
-ROULETTE_NO_TARGET_BUTTON_ITEMS = (ITEM_BEER, ITEM_CIGARETTE, ITEM_SAW, ITEM_INVERTER)
+ROULETTE_NO_TARGET_BUTTON_ITEMS = (ITEM_BEER, ITEM_CIGARETTE, ITEM_SAW, ITEM_MAGNIFIER, ITEM_INVERTER)
 
 TENCENT_MAP_API_BASE = "https://apis.map.qq.com"
 TENCENT_MAP_PLACE_SEARCH_PATH = "/ws/place/v1/search"
@@ -432,6 +434,7 @@ def _build_roulette_settings_keyboard(settings: RouletteSettings | None) -> qinl
     settings = settings or RouletteSettings()
     settings.normalize()
     random_shell_target = "否" if settings.random_shell_count else "是"
+    random_item_target = "否" if settings.random_item_count else "是"
     random_hp_target = "否" if settings.random_hp else "是"
     return {
         "content": {
@@ -440,11 +443,13 @@ def _build_roulette_settings_keyboard(settings: RouletteSettings | None) -> qinl
                     "buttons": [
                         _build_roulette_button("roulette_set_shell_max", "子弹上限", "轮盘设置 子弹上限 [数量]"),
                         _build_roulette_button("roulette_set_shell_min", "子弹下限", "轮盘设置 子弹下限 [数量]"),
-                        _build_roulette_button("roulette_set_items", "道具数量", "轮盘设置 道具数量 [数量]"),
+                        _build_roulette_button("roulette_set_item_max", "道具刷新上限", "轮盘设置 道具刷新上限 [数量]"),
+                        _build_roulette_button("roulette_set_item_min", "道具刷新下限", "轮盘设置 道具刷新下限 [数量]"),
                     ]
                 },
                 {
                     "buttons": [
+                        _build_roulette_button("roulette_set_inventory_max", "持有上限", "轮盘设置 道具持有上限 [数量]"),
                         _build_roulette_button("roulette_set_hp_max", "血量上限", "轮盘设置 血量上限 [数量]"),
                         _build_roulette_button("roulette_set_hp_min", "血量下限", "轮盘设置 血量下限 [数量]"),
                     ]
@@ -455,6 +460,11 @@ def _build_roulette_settings_keyboard(settings: RouletteSettings | None) -> qinl
                             "roulette_set_random_shell",
                             f"随机子弹：{random_shell_target}",
                             f"轮盘设置 随机子弹 {random_shell_target}",
+                        ),
+                        _build_roulette_button(
+                            "roulette_set_random_item",
+                            f"随机道具：{random_item_target}",
+                            f"轮盘设置 随机道具 {random_item_target}",
                         ),
                         _build_roulette_button(
                             "roulette_set_random_hp",
@@ -1546,7 +1556,7 @@ class QQOfficialUtilPlugin(Star):
             "轮盘绑定 昵称 / 轮盘我的名字 / 轮盘改名 新昵称\n"
             "轮盘创建 / 轮盘加入 / 轮盘退出 / 轮盘设置 / 轮盘开始 / 轮盘状态 / 轮盘结束\n"
             "轮盘开枪 自己 / 轮盘开枪 编号\n"
-            "轮盘道具 啤酒|香烟|手锯|换向器"
+            "轮盘道具 啤酒|香烟|手锯|放大镜|换向器"
         )
 
     def _handle_roulette_settings_command(self, settings: RouletteSettings, args: list[str]) -> str:
@@ -1556,7 +1566,7 @@ class QQOfficialUtilPlugin(Star):
 
         field = args[0]
         value = args[1] if len(args) >= 2 else None
-        if field in {"子弹上限", "子弹下限", "道具数量", "血量上限", "血量下限"}:
+        if field in {"子弹上限", "子弹下限", "道具数量", "道具刷新上限", "道具刷新下限", "道具持有上限", "血量上限", "血量下限"}:
             if value is None or value == "[数量]":
                 raise RouletteGameError(f"请把 [数量] 改成数字，例如：轮盘设置 {field} 4")
             try:
@@ -1567,8 +1577,12 @@ class QQOfficialUtilPlugin(Star):
                 settings.shell_count_max = max(2, number)
             elif field == "子弹下限":
                 settings.shell_count_min = max(2, number)
-            elif field == "道具数量":
-                settings.item_count_per_reload = max(0, min(8, number))
+            elif field in {"道具数量", "道具刷新上限"}:
+                settings.item_count_max = max(0, number)
+            elif field == "道具刷新下限":
+                settings.item_count_min = max(0, number)
+            elif field == "道具持有上限":
+                settings.item_inventory_max = max(0, min(20, number))
             elif field == "血量上限":
                 settings.hp_max = max(1, number)
             elif field == "血量下限":
@@ -1576,12 +1590,14 @@ class QQOfficialUtilPlugin(Star):
             settings.normalize()
             return f"已更新：{field} = {number}\n\n{self._roulette_settings_text(settings)}"
 
-        if field in {"随机子弹", "随机血量"}:
+        if field in {"随机子弹", "随机道具", "随机血量"}:
             if value not in {"是", "否"}:
                 raise RouletteGameError(f"请使用：轮盘设置 {field} 是/否")
             enabled = value == "是"
             if field == "随机子弹":
                 settings.random_shell_count = enabled
+            elif field == "随机道具":
+                settings.random_item_count = enabled
             else:
                 settings.random_hp = enabled
             settings.normalize()
@@ -1596,7 +1612,10 @@ class QQOfficialUtilPlugin(Star):
             f"子弹上限：{settings.shell_count_max}\n"
             f"子弹下限：{settings.shell_count_min}\n"
             f"随机子弹数：{'是' if settings.random_shell_count else '否'}\n"
-            f"每轮刷新道具数量：{settings.item_count_per_reload}\n"
+            f"道具刷新上限：{settings.item_count_max}\n"
+            f"道具刷新下限：{settings.item_count_min}\n"
+            f"随机道具刷新数：{'是' if settings.random_item_count else '否'}\n"
+            f"道具持有上限：{settings.item_inventory_max}\n"
             f"血量上限：{settings.hp_max}\n"
             f"血量下限：{settings.hp_min}\n"
             f"随机开局血量：{'是' if settings.random_hp else '否'}"
@@ -1608,7 +1627,14 @@ class QQOfficialUtilPlugin(Star):
             shell_count_max=self._config_int(raw, "shell_count_max", 4),
             shell_count_min=self._config_int(raw, "shell_count_min", 2),
             random_shell_count=self._config_bool(raw, "random_shell_count", False),
-            item_count_per_reload=self._config_int(raw, "item_count_per_reload", 1),
+            item_count_max=self._config_int(
+                raw,
+                "item_count_max",
+                self._config_int(raw, "item_count_per_reload", 1),
+            ),
+            item_count_min=self._config_int(raw, "item_count_min", 1),
+            random_item_count=self._config_bool(raw, "random_item_count", False),
+            item_inventory_max=self._config_int(raw, "item_inventory_max", 8),
             hp_max=self._config_int(raw, "hp_max", 2),
             hp_min=self._config_int(raw, "hp_min", 1),
             random_hp=self._config_bool(raw, "random_hp", False),
@@ -1621,7 +1647,10 @@ class QQOfficialUtilPlugin(Star):
             "shell_count_max": self.roulette_settings.shell_count_max,
             "shell_count_min": self.roulette_settings.shell_count_min,
             "random_shell_count": self.roulette_settings.random_shell_count,
-            "item_count_per_reload": self.roulette_settings.item_count_per_reload,
+            "item_count_max": self.roulette_settings.item_count_max,
+            "item_count_min": self.roulette_settings.item_count_min,
+            "random_item_count": self.roulette_settings.random_item_count,
+            "item_inventory_max": self.roulette_settings.item_inventory_max,
             "hp_max": self.roulette_settings.hp_max,
             "hp_min": self.roulette_settings.hp_min,
             "random_hp": self.roulette_settings.random_hp,

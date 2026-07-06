@@ -80,6 +80,7 @@ def test_roulette_keyboard_uses_command_buttons_with_limits():
         module.ITEM_BEER,
         module.ITEM_CIGARETTE,
         module.ITEM_SAW,
+        module.ITEM_MAGNIFIER,
         module.ITEM_INVERTER,
     ]
 
@@ -95,6 +96,7 @@ def test_roulette_keyboard_uses_command_buttons_with_limits():
     assert rows[1]["buttons"][0]["action"]["data"] == "轮盘开枪 2"
     assert not any(button["action"]["data"] == "轮盘开枪 1" for button in buttons)
     assert any(button["action"]["data"] == "轮盘道具 啤酒" for button in buttons)
+    assert any(button["action"]["data"] == "轮盘道具 放大镜" for button in buttons)
 
 
 def test_roulette_keyboard_waiting_room_join_leave_start():
@@ -165,8 +167,12 @@ def test_roulette_settings_keyboard_uses_placeholders_and_target_state():
     buttons = [button for row in keyboard["content"]["rows"] for button in row["buttons"]]
 
     assert any(button["action"]["data"] == "轮盘设置 子弹上限 [数量]" for button in buttons)
-    assert any(button["action"]["data"] == "轮盘设置 道具数量 [数量]" for button in buttons)
+    assert any(button["action"]["data"] == "轮盘设置 道具刷新上限 [数量]" for button in buttons)
+    assert any(button["action"]["data"] == "轮盘设置 道具持有上限 [数量]" for button in buttons)
+    assert len(keyboard["content"]["rows"]) <= 5
+    assert all(len(row["buttons"]) <= 5 for row in keyboard["content"]["rows"])
     assert any(button["render_data"]["label"] == "随机子弹：是" for button in buttons)
+    assert any(button["render_data"]["label"] == "随机道具：是" for button in buttons)
     assert any(button["render_data"]["label"] == "随机血量：否" for button in buttons)
 
 

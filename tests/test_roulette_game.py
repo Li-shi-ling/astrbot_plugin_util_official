@@ -12,6 +12,7 @@ from core.roulette_game import (
     ITEM_BEER,
     ITEM_CIGARETTE,
     ITEM_INVERTER,
+    ITEM_MAGNIFIER,
     ITEM_POOL,
     ITEM_SAW,
     MAX_PLAYERS,
@@ -107,7 +108,12 @@ def test_items_mvp_effects():
     actor.items = [ITEM_SAW]
     result = game.use_item("u1", ITEM_SAW)
     assert game.next_live_damage == 2
-    assert "下一发实弹伤害变为 2" in result.message
+    assert "伤害 +1" in result.message
+
+    actor.items = [ITEM_MAGNIFIER]
+    game.shell_queue = [SHELL_BLANK]
+    result = game.use_item("u1", ITEM_MAGNIFIER)
+    assert "公开查看：下一发是空弹" in result.message
 
     actor.items = [ITEM_INVERTER]
     game.shell_queue = [SHELL_LIVE]
@@ -131,6 +137,19 @@ def test_handcuffs_are_not_in_item_pool():
     assert "手铐" not in ITEM_POOL
 
 
+def test_saw_effect_is_consumed_by_blank_shell():
+    game = make_started_game()
+    actor = game.current_player()
+    actor.items = [ITEM_SAW]
+    game.use_item("u1", ITEM_SAW)
+    game.shell_queue = [SHELL_BLANK, SHELL_LIVE]
+
+    result = game.shoot("u1", "自己")
+
+    assert "手锯效果落空并消失" in result.message
+    assert game.next_live_damage == 1
+
+
 def test_settings_control_shells_items_and_starting_hp():
     game = RouletteGame(
         group_openid="group",
@@ -139,7 +158,10 @@ def test_settings_control_shells_items_and_starting_hp():
             shell_count_max=6,
             shell_count_min=5,
             random_shell_count=False,
-            item_count_per_reload=2,
+            item_count_max=2,
+            item_count_min=2,
+            random_item_count=False,
+            item_inventory_max=2,
             hp_max=3,
             hp_min=1,
             random_hp=False,
@@ -153,3 +175,22 @@ def test_settings_control_shells_items_and_starting_hp():
     assert len(game.shell_queue) == 6
     assert all(player.hp == 3 and player.max_hp == 3 for player in game.players)
     assert all(len(player.items) == 2 for player in game.players)
+
+
+def test_random_item_count_is_shared_by_all_alive_players():
+    game = RouletteGame(
+        group_openid="group",
+        owner_id="u1",
+        settings=RouletteSettings(
+            item_count_max=3,
+            item_count_min=3,
+            random_item_count=True,
+            item_inventory_max=5,
+        ),
+    )
+    game.add_player("u1", "玩家1")
+    game.add_player("u2", "玩家2")
+
+    game.start("u1")
+
+    assert [len(player.items) for player in game.players] == [3, 3]
