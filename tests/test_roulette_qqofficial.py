@@ -80,7 +80,10 @@ def test_roulette_keyboard_uses_command_buttons_with_limits():
         module.ITEM_BEER,
         module.ITEM_CIGARETTE,
         module.ITEM_SAW,
+        module.ITEM_HANDCUFFS,
         module.ITEM_MAGNIFIER,
+        module.ITEM_EXPIRED_MEDICINE,
+        module.ITEM_PHONE,
         module.ITEM_INVERTER,
     ]
 
@@ -97,6 +100,29 @@ def test_roulette_keyboard_uses_command_buttons_with_limits():
     assert not any(button["action"]["data"] == "轮盘开枪 1" for button in buttons)
     assert any(button["action"]["data"] == "轮盘道具 啤酒" for button in buttons)
     assert any(button["action"]["data"] == "轮盘道具 放大镜" for button in buttons)
+    assert any(button["action"]["data"] == "轮盘道具 过期药" for button in buttons)
+    assert any(button["action"]["data"] == "轮盘道具 电话" for button in buttons)
+    assert any(button["action"]["data"] == "轮盘道具 手铐" for button in buttons)
+    assert not any(button["action"]["data"] == "轮盘道具 手铐 2" for button in buttons)
+
+
+def test_roulette_handcuffs_target_keyboard_uses_numbered_targets():
+    module = load_plugin_module()
+    game = make_started_game(module, count=3)
+
+    keyboard = module._build_roulette_handcuffs_target_keyboard(game)
+    buttons = [button for row in keyboard["content"]["rows"] for button in row["buttons"]]
+
+    assert [button["action"]["data"] for button in buttons] == [
+        "轮盘道具 手铐 2",
+        "轮盘道具 手铐 3",
+        "轮盘状态",
+    ]
+    assert [button["render_data"]["label"] for button in buttons] == [
+        "2.玩家2",
+        "3.玩家3",
+        "取消",
+    ]
 
 
 def test_roulette_keyboard_waiting_room_join_leave_start():
@@ -234,6 +260,38 @@ def test_roulette_create_copies_public_default_settings():
     assert game.settings.shell_count_max == 7
     assert game.settings.hp_max == 4
     assert game.settings is not plugin.roulette_settings
+    assert with_keyboard is True
+
+
+def test_handcuffs_without_target_opens_target_selection():
+    module = load_plugin_module()
+    plugin = object.__new__(module.QQOfficialUtilPlugin)
+    session_id = "qq_official:group-openid"
+    game = module.RouletteGame(group_openid="group-openid", owner_id="u1")
+    game.add_player("u1", "\u623f\u4e3b")
+    game.add_player("u2", "\u73a9\u5bb62")
+    game.start("u1")
+    game.current_player().items = [module.ITEM_HANDCUFFS]
+    plugin.roulette_games = {session_id: game}
+    plugin.roulette_user_repo = SimpleNamespace()
+    event = FakeEvent(
+        module,
+        text=f"{module.ROULETTE_COMMAND_PREFIX}\u9053\u5177 \u624b\u94d0",
+    )
+
+    message, returned_game, with_keyboard = __import__("asyncio").run(
+        plugin._handle_roulette_command(
+            f"{module.ROULETTE_COMMAND_PREFIX}\u9053\u5177 \u624b\u94d0",
+            group_openid="group-openid",
+            platform_user_id="u1",
+            session_id=session_id,
+            event=event,
+        )
+    )
+
+    assert "\u9009\u62e9\u624b\u94d0\u76ee\u6807" in message
+    assert "\u8f6e\u76d8\u9053\u5177 \u624b\u94d0 [\u76ee\u6807\u7f16\u53f7]" in message
+    assert returned_game is game
     assert with_keyboard is True
 
 

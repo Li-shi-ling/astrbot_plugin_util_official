@@ -33,8 +33,11 @@ try:
     from .core.roulette_game import (
         ITEM_BEER,
         ITEM_CIGARETTE,
+        ITEM_EXPIRED_MEDICINE,
+        ITEM_HANDCUFFS,
         ITEM_INVERTER,
         ITEM_MAGNIFIER,
+        ITEM_PHONE,
         ITEM_SAW,
         MAX_PLAYERS,
         RouletteGame,
@@ -52,8 +55,11 @@ except ImportError:
     from core.roulette_game import (
         ITEM_BEER,
         ITEM_CIGARETTE,
+        ITEM_EXPIRED_MEDICINE,
+        ITEM_HANDCUFFS,
         ITEM_INVERTER,
         ITEM_MAGNIFIER,
+        ITEM_PHONE,
         ITEM_SAW,
         MAX_PLAYERS,
         RouletteGame,
@@ -93,7 +99,16 @@ CALLBACK_BUTTON_A_VISITED_LABEL = "已回调 A"
 CALLBACK_BUTTON_B_VISITED_LABEL = "已回调 B"
 QQOFFICIAL_INTERACTION_INTENT = 1 << 26
 ROULETTE_COMMAND_PREFIX = "轮盘"
-ROULETTE_NO_TARGET_BUTTON_ITEMS = (ITEM_BEER, ITEM_CIGARETTE, ITEM_SAW, ITEM_MAGNIFIER, ITEM_INVERTER)
+ROULETTE_NO_TARGET_BUTTON_ITEMS = (
+    ITEM_BEER,
+    ITEM_CIGARETTE,
+    ITEM_SAW,
+    ITEM_HANDCUFFS,
+    ITEM_MAGNIFIER,
+    ITEM_EXPIRED_MEDICINE,
+    ITEM_PHONE,
+    ITEM_INVERTER,
+)
 
 TENCENT_MAP_API_BASE = "https://apis.map.qq.com"
 TENCENT_MAP_PLACE_SEARCH_PATH = "/ws/place/v1/search"
@@ -402,8 +417,10 @@ def _build_roulette_keyboard(game: RouletteGame | None) -> qinline.Keyboard:
                     f"轮盘道具 {item_name}",
                 )
             )
-    if item_buttons:
-        rows.append({"buttons": item_buttons[:5]})
+    for offset in range(0, len(item_buttons), 5):
+        if len(rows) >= 5:
+            break
+        rows.append({"buttons": item_buttons[offset : offset + 5]})
 
     return {"content": {"rows": rows[:5]}}
 
@@ -414,20 +431,49 @@ def _build_roulette_message_payload(
     *,
     with_keyboard: bool = True,
     settings_keyboard: bool = False,
+    handcuffs_target_keyboard: bool = False,
     settings: RouletteSettings | None = None,
 ) -> dict[str, Any]:
     keyboard = None
     if with_keyboard:
-        keyboard = (
-            _build_roulette_settings_keyboard(settings or (game.settings if game else None))
-            if settings_keyboard
-            else _build_roulette_keyboard(game)
-        )
+        if handcuffs_target_keyboard:
+            keyboard = _build_roulette_handcuffs_target_keyboard(game)
+        elif settings_keyboard:
+            keyboard = _build_roulette_settings_keyboard(settings or (game.settings if game else None))
+        else:
+            keyboard = _build_roulette_keyboard(game)
     return {
         "msg_type": 2,
         "markdown": MarkdownPayload(content=_format_roulette_markdown(text or "轮盘")),
         "keyboard": keyboard,
     }
+
+
+def _build_roulette_handcuffs_target_keyboard(game: RouletteGame | None) -> qinline.Keyboard:
+    if not game or game.phase != "playing":
+        return {"content": {"rows": []}}
+    current_user_id = game.current_player().user_id
+    buttons: list[qinline.Button] = []
+    for number, player in enumerate(game.players, start=1):
+        if not player.alive or player.user_id == current_user_id:
+            continue
+        label = f"{number}.{_short_button_name(player.display_name)}"
+        buttons.append(
+            _build_roulette_button(
+                f"roulette_handcuffs_target_{number}",
+                label,
+                f"轮盘道具 手铐 {number}",
+            )
+        )
+    buttons.append(
+        _build_roulette_button(
+            "roulette_handcuffs_cancel",
+            "取消",
+            "轮盘状态",
+        )
+    )
+    rows = [{"buttons": buttons[offset : offset + 5]} for offset in range(0, len(buttons), 5)]
+    return {"content": {"rows": rows[:5]}}
 
 
 def _build_roulette_settings_keyboard(settings: RouletteSettings | None) -> qinline.Keyboard:
@@ -494,7 +540,7 @@ def _format_roulette_markdown(text: str) -> str:
         if not stripped:
             formatted.append("")
             continue
-        if stripped in {"恶魔轮盘状态", "恶魔轮盘指令：", "恶魔轮盘指令:", "轮盘设置"}:
+        if stripped in {"恶魔轮盘状态", "恶魔轮盘指令：", "恶魔轮盘指令:", "轮盘设置", "选择手铐目标"}:
             formatted.append(f"## {stripped.rstrip('：:')}")
         elif stripped.startswith("当前弹队列："):
             formatted.append(f"**当前弹队列**：{stripped.removeprefix('当前弹队列：')}")
@@ -1118,6 +1164,7 @@ class QQOfficialUtilPlugin(Star):
                 game,
                 with_keyboard=with_keyboard,
                 settings_keyboard=self._is_roulette_settings_command(command_text),
+                handcuffs_target_keyboard=self._is_roulette_handcuffs_select_command(command_text),
                 settings=self.roulette_settings,
             ),
         ):
@@ -1430,12 +1477,22 @@ class QQOfficialUtilPlugin(Star):
             if not args:
                 raise RouletteGameError("请指定道具名，例如：轮盘道具 啤酒")
             target_number = None
+            item_name = game.normalize_item_name(args[0])
+            if item_name == ITEM_HANDCUFFS and len(args) < 2:
+                actor = game.require_playing_actor(platform_user_id)
+                if ITEM_HANDCUFFS not in actor.items:
+                    raise RouletteGameError(f"你没有道具：{ITEM_HANDCUFFS}")
+                return (
+                    self._roulette_handcuffs_target_text(game),
+                    game,
+                    True,
+                )
             if len(args) >= 2:
                 try:
                     target_number = int(args[1])
                 except ValueError as exc:
                     raise RouletteGameError("目标请使用玩家编号。") from exc
-            result = game.use_item(platform_user_id, args[0], target_number)
+            result = game.use_item(platform_user_id, item_name, target_number)
             if result.ended:
                 self.roulette_games.pop(session_id, None)
             return (
@@ -1508,6 +1565,15 @@ class QQOfficialUtilPlugin(Star):
         parts = remainder.split()
         return bool(parts) and parts[0] == "设置"
 
+    def _is_roulette_handcuffs_select_command(self, command_text: str) -> bool:
+        stripped = str(command_text or "").strip()
+        if not stripped.startswith(ROULETTE_COMMAND_PREFIX):
+            return False
+        parts = stripped[len(ROULETTE_COMMAND_PREFIX) :].strip().split()
+        if len(parts) != 2 or parts[0] != "道具":
+            return False
+        return parts[1] in {"手铐", "铐"}
+
     def _extract_roulette_group_context(
         self,
         event: AstrMessageEvent,
@@ -1556,7 +1622,7 @@ class QQOfficialUtilPlugin(Star):
             "轮盘绑定 昵称 / 轮盘我的名字 / 轮盘改名 新昵称\n"
             "轮盘创建 / 轮盘加入 / 轮盘退出 / 轮盘设置 / 轮盘开始 / 轮盘状态 / 轮盘结束\n"
             "轮盘开枪 自己 / 轮盘开枪 编号\n"
-            "轮盘道具 啤酒|香烟|手锯|放大镜|换向器"
+            "轮盘道具 啤酒|香烟|手锯|放大镜|过期药|电话|换向器 / 轮盘道具 手铐 编号"
         )
 
     def _handle_roulette_settings_command(self, settings: RouletteSettings, args: list[str]) -> str:
@@ -1620,6 +1686,16 @@ class QQOfficialUtilPlugin(Star):
             f"血量下限：{settings.hp_min}\n"
             f"随机开局血量：{'是' if settings.random_hp else '否'}"
         )
+
+    def _roulette_handcuffs_target_text(self, game: RouletteGame) -> str:
+        current_user_id = game.current_player().user_id
+        lines = ["选择手铐目标"]
+        for index, player in enumerate(game.players, start=1):
+            if not player.alive or player.user_id == current_user_id:
+                continue
+            lines.append(f"{index}. {player.display_name} | HP {player.hp}/{player.max_hp}")
+        lines.append("也可以发送：轮盘道具 手铐 [目标编号]")
+        return "\n".join(lines)
 
     def _load_roulette_settings_from_config(self) -> RouletteSettings:
         raw = self._get_config_section("roulette_settings")

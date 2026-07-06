@@ -13,10 +13,30 @@ SHELL_BLANK = "blank"
 ITEM_BEER = "啤酒"
 ITEM_CIGARETTE = "香烟"
 ITEM_SAW = "手锯"
+ITEM_HANDCUFFS = "手铐"
 ITEM_MAGNIFIER = "放大镜"
+ITEM_EXPIRED_MEDICINE = "过期药"
+ITEM_PHONE = "电话"
 ITEM_INVERTER = "换向器"
-ITEM_POOL = [ITEM_BEER, ITEM_CIGARETTE, ITEM_SAW, ITEM_MAGNIFIER, ITEM_INVERTER]
-NO_TARGET_ITEMS = {ITEM_BEER, ITEM_CIGARETTE, ITEM_SAW, ITEM_MAGNIFIER, ITEM_INVERTER}
+ITEM_POOL = [
+    ITEM_BEER,
+    ITEM_CIGARETTE,
+    ITEM_SAW,
+    ITEM_HANDCUFFS,
+    ITEM_MAGNIFIER,
+    ITEM_EXPIRED_MEDICINE,
+    ITEM_PHONE,
+    ITEM_INVERTER,
+]
+NO_TARGET_ITEMS = {
+    ITEM_BEER,
+    ITEM_CIGARETTE,
+    ITEM_SAW,
+    ITEM_MAGNIFIER,
+    ITEM_EXPIRED_MEDICINE,
+    ITEM_PHONE,
+    ITEM_INVERTER,
+}
 
 
 class RouletteGameError(ValueError):
@@ -30,6 +50,7 @@ class RoulettePlayer:
     hp: int = DEFAULT_HP
     max_hp: int = DEFAULT_HP
     items: list[str] = field(default_factory=list)
+    skip_turns: int = 0
 
     @property
     def alive(self) -> bool:
@@ -198,7 +219,7 @@ class RouletteGame:
         actor = self.require_playing_actor(actor_id)
         item_name = self.normalize_item_name(item_name)
         if item_name not in ITEM_POOL:
-            raise RouletteGameError("未知道具。可用：啤酒、香烟、手锯、放大镜、换向器。")
+            raise RouletteGameError("未知道具。可用：啤酒、香烟、手锯、手铐、放大镜、过期药、电话、换向器。")
         if item_name not in actor.items:
             raise RouletteGameError(f"你没有道具：{item_name}")
 
@@ -224,6 +245,15 @@ class RouletteGame:
             self._consume_item(actor, item_name)
             self.next_live_damage = 2
             lines.append(f"{actor.display_name} 使用手锯，下一发子弹若为实弹，伤害 +1；若为空弹，效果消失。")
+        elif item_name == ITEM_HANDCUFFS:
+            if target_number is None:
+                raise RouletteGameError("手铐需要目标编号，例如：轮盘道具 手铐 2")
+            target = self.player_by_number(target_number)
+            if target.user_id == actor.user_id:
+                raise RouletteGameError("不能对自己使用手铐。")
+            self._consume_item(actor, item_name)
+            target.skip_turns += 1
+            lines.append(f"{actor.display_name} 使用手铐，{target.display_name} 将跳过下一次行动。")
         elif item_name == ITEM_MAGNIFIER:
             self._consume_item(actor, item_name)
             if not self.shell_queue:
@@ -231,6 +261,25 @@ class RouletteGame:
                 lines.append("弹队列为空，已重新装填。")
             shell_text = "实弹" if self.shell_queue[0] == SHELL_LIVE else "空弹"
             lines.append(f"{actor.display_name} 使用放大镜，公开查看：下一发是{shell_text}。")
+        elif item_name == ITEM_EXPIRED_MEDICINE:
+            self._consume_item(actor, item_name)
+            if self.rng.choice([True, False]):
+                actor.hp = min(actor.max_hp, actor.hp + 2)
+                lines.append(f"{actor.display_name} 使用过期药，运气不错，恢复 2 点血。")
+            else:
+                actor.hp = max(0, actor.hp - 1)
+                lines.append(f"{actor.display_name} 使用过期药，药效反噬，受到 1 点伤害。")
+                if not actor.alive:
+                    lines.append(f"{actor.display_name} 淘汰。")
+                    self._advance_turn(lines)
+        elif item_name == ITEM_PHONE:
+            self._consume_item(actor, item_name)
+            if not self.shell_queue:
+                self.reload_shells(deal_items=True)
+                lines.append("弹队列为空，已重新装填。")
+            position = self.rng.randrange(len(self.shell_queue))
+            shell_text = "实弹" if self.shell_queue[position] == SHELL_LIVE else "空弹"
+            lines.append(f"{actor.display_name} 使用电话，公开情报：第 {position + 1} 发是{shell_text}。")
         elif item_name == ITEM_INVERTER:
             self._consume_item(actor, item_name)
             if not self.shell_queue:
@@ -253,8 +302,13 @@ class RouletteGame:
             "锯": ITEM_SAW,
             "手锯": ITEM_SAW,
             "啤酒": ITEM_BEER,
+            "手铐": ITEM_HANDCUFFS,
+            "铐": ITEM_HANDCUFFS,
             "镜": ITEM_MAGNIFIER,
             "放大镜": ITEM_MAGNIFIER,
+            "药": ITEM_EXPIRED_MEDICINE,
+            "过期药": ITEM_EXPIRED_MEDICINE,
+            "电话": ITEM_PHONE,
             "换向器": ITEM_INVERTER,
             "逆转器": ITEM_INVERTER,
         }
@@ -332,6 +386,12 @@ class RouletteGame:
             self.current_index = (self.current_index + 1) % len(self.players)
             candidate = self.players[self.current_index]
             if not candidate.alive:
+                if self.current_index == start:
+                    return
+                continue
+            if candidate.skip_turns > 0:
+                candidate.skip_turns -= 1
+                lines.append(f"{candidate.display_name} 被手铐限制，跳过本次行动。")
                 if self.current_index == start:
                     return
                 continue

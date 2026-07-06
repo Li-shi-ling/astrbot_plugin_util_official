@@ -11,8 +11,11 @@ if str(PLUGIN_ROOT) not in sys.path:
 from core.roulette_game import (
     ITEM_BEER,
     ITEM_CIGARETTE,
+    ITEM_EXPIRED_MEDICINE,
+    ITEM_HANDCUFFS,
     ITEM_INVERTER,
     ITEM_MAGNIFIER,
+    ITEM_PHONE,
     ITEM_POOL,
     ITEM_SAW,
     MAX_PLAYERS,
@@ -115,6 +118,11 @@ def test_items_mvp_effects():
     result = game.use_item("u1", ITEM_MAGNIFIER)
     assert "公开查看：下一发是空弹" in result.message
 
+    actor.items = [ITEM_PHONE]
+    game.shell_queue = [SHELL_LIVE, SHELL_BLANK]
+    result = game.use_item("u1", ITEM_PHONE)
+    assert "公开情报：第" in result.message
+
     actor.items = [ITEM_INVERTER]
     game.shell_queue = [SHELL_LIVE]
     result = game.use_item("u1", ITEM_INVERTER)
@@ -133,8 +141,24 @@ def test_status_does_not_reveal_current_shell_type():
     assert "空弹\n" not in status
 
 
-def test_handcuffs_are_not_in_item_pool():
-    assert "手铐" not in ITEM_POOL
+def test_handcuffs_are_target_item_and_skip_next_action():
+    game = RouletteGame(group_openid="group", owner_id="u1")
+    game.add_player("u1", "玩家1")
+    game.add_player("u2", "玩家2")
+    game.add_player("u3", "玩家3")
+    game.start("u1")
+    actor = game.current_player()
+    actor.items = [ITEM_HANDCUFFS]
+
+    result = game.use_item("u1", ITEM_HANDCUFFS, 2)
+    assert "将跳过下一次行动" in result.message
+    assert game.players[1].skip_turns == 1
+
+    game.shell_queue = [SHELL_BLANK, SHELL_LIVE]
+    result = game.shoot("u1", "3")
+    assert "被手铐限制，跳过本次行动" in result.message
+    assert game.current_player().user_id == "u3"
+    assert ITEM_HANDCUFFS in ITEM_POOL
 
 
 def test_saw_effect_is_consumed_by_blank_shell():
@@ -148,6 +172,18 @@ def test_saw_effect_is_consumed_by_blank_shell():
 
     assert "手锯效果落空并消失" in result.message
     assert game.next_live_damage == 1
+
+
+def test_expired_medicine_can_heal_or_damage_publicly():
+    game = make_started_game()
+    actor = game.current_player()
+
+    game.rng.seed(1)
+    actor.items = [ITEM_EXPIRED_MEDICINE]
+    actor.hp = 1
+    result = game.use_item("u1", ITEM_EXPIRED_MEDICINE)
+    assert "过期药" in result.message
+    assert actor.hp in {0, 2}
 
 
 def test_settings_control_shells_items_and_starting_hp():
