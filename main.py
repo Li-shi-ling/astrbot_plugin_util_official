@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import aiosqlite
 import botpy.message as botpy_message
 from botpy.interaction import Interaction
 from botpy.types import inline as qinline
@@ -23,6 +24,18 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.config import AstrBotConfig
+
+try:
+    from .core.open_room_parser import parse_create_payload
+    from .core.open_room_storage import OpenRoomEntry, OpenRoomStore
+except ImportError:
+    import sys
+
+    plugin_dir = Path(__file__).resolve().parent
+    if str(plugin_dir) not in sys.path:
+        sys.path.insert(0, str(plugin_dir))
+    from core.open_room_parser import parse_create_payload
+    from core.open_room_storage import OpenRoomEntry, OpenRoomStore
 
 QQOFFICIAL_PLATFORMS = {"qq_official", "qq_official_webhook"}
 QQOFFICIAL_MESSAGE_EVENT_NAMES = {
@@ -54,6 +67,11 @@ BUTTON_B_VISITED_LABEL = "已按下 B"
 CALLBACK_BUTTON_A_VISITED_LABEL = "已回调 A"
 CALLBACK_BUTTON_B_VISITED_LABEL = "已回调 B"
 QQOFFICIAL_INTERACTION_INTENT = 1 << 26
+OPEN_ROOM_COMMAND_PREFIX = "开房"
+OPEN_ROOM_CREATE_TEMPLATE = "开房创建 房间码或邀请链接｜游戏/平台｜备注=玩法时间｜初始=1｜上限=4"
+OPEN_ROOM_LONG_TERM_TEMPLATE = "开房创建 好友码或服务器地址｜游戏/平台｜备注=长期可加｜长期"
+OPEN_ROOM_JOIN_TEMPLATE = "开房加入 #RM0001"
+OPEN_ROOM_DELETE_TEMPLATE = "开房删除 #RM0001"
 TENCENT_MAP_API_BASE = "https://apis.map.qq.com"
 TENCENT_MAP_PLACE_SEARCH_PATH = "/ws/place/v1/search"
 TENCENT_MAP_STATIC_PATH = "/ws/staticmap/v2/"
@@ -259,6 +277,86 @@ def _build_callback_button_message_payload() -> dict[str, Any]:
         "msg_type": 2,
         "markdown": MarkdownPayload(content=CALLBACK_BUTTON_PROMPT),
         "keyboard": _build_callback_button_keyboard(),
+    }
+
+
+def _build_open_room_button(button_id: str, label: str, data: str) -> qinline.Button:
+    return _build_button_payload(
+        QQOfficialButtonSpec(
+            button_id=button_id,
+            label=label,
+            visited_label=label,
+            data=data,
+        )
+    )
+
+
+def _build_open_room_keyboard(
+    entries: list[OpenRoomEntry] | None = None,
+    *,
+    kind: str = "menu",
+) -> qinline.Keyboard:
+    rows: list[dict[str, list[qinline.Button]]] = []
+    entries = entries or []
+    if kind in {"menu", "create"}:
+        rows.extend(
+            [
+                {
+                    "buttons": [
+                        _build_open_room_button(
+                            "open_room_create_short",
+                            "创建短期房",
+                            OPEN_ROOM_CREATE_TEMPLATE,
+                        ),
+                        _build_open_room_button(
+                            "open_room_create_long",
+                            "创建长期房",
+                            OPEN_ROOM_LONG_TERM_TEMPLATE,
+                        ),
+                    ]
+                },
+                {
+                    "buttons": [
+                        _build_open_room_button("open_room_find", "查找房间", "开房查找"),
+                        _build_open_room_button("open_room_join", "输入加入", OPEN_ROOM_JOIN_TEMPLATE),
+                        _build_open_room_button("open_room_delete", "删除房间", OPEN_ROOM_DELETE_TEMPLATE),
+                    ]
+                },
+            ]
+        )
+    elif kind in {"entry", "entries"}:
+        join_buttons = [
+            _build_open_room_button(
+                f"open_room_join_{entry.code}",
+                f"加入 {entry.code}",
+                f"开房加入 #{entry.code}",
+            )
+            for entry in entries[:10]
+            if not entry.is_full
+        ]
+        for offset in range(0, len(join_buttons), 5):
+            rows.append({"buttons": join_buttons[offset : offset + 5]})
+        rows.append(
+            {
+                "buttons": [
+                    _build_open_room_button("open_room_refresh", "刷新列表", "开房查找"),
+                    _build_open_room_button("open_room_menu", "菜单", "开房"),
+                ]
+            }
+        )
+    return {"content": {"rows": rows[:5]}}
+
+
+def _build_open_room_message_payload(
+    text: str,
+    *,
+    entries: list[OpenRoomEntry] | None = None,
+    kind: str = "menu",
+) -> dict[str, Any]:
+    return {
+        "msg_type": 2,
+        "markdown": MarkdownPayload(content=_format_open_room_markdown(text)),
+        "keyboard": _build_open_room_keyboard(entries, kind=kind),
     }
 
 
@@ -587,11 +685,62 @@ def _chunk_text(text: str, size: int = MAX_TEXT_CHUNK_SIZE) -> list[str]:
     return [text[i : i + size] for i in range(0, len(text), size)] or [""]
 
 
+def _open_room_help_text() -> str:
+    return (
+        "开房菜单\n"
+        "点按钮生成指令后，把模板里的房间码、游戏名、人数改成自己的内容。\n"
+        "也可以直接发送：开房查找 / 开房加入 #RM0001 / 开房删除 #RM0001"
+    )
+
+
+def _open_room_create_help_text() -> str:
+    return (
+        "创建房间\n"
+        f"短期模板：{OPEN_ROOM_CREATE_TEMPLATE}\n"
+        f"长期模板：{OPEN_ROOM_LONG_TERM_TEMPLATE}\n"
+        "字段用 ｜ 分隔；可选字段：备注=、初始=、上限=、长期。"
+    )
+
+
+def _render_open_room_entry(entry: OpenRoomEntry) -> str:
+    limit = str(entry.max_count) if entry.max_count is not None else "∞"
+    lifetime = "长期" if entry.is_long_term else "短期"
+    if entry.is_full:
+        lifetime += "，已满"
+    elif entry.expires_at:
+        lifetime += f"，至 {entry.expires_at.astimezone().strftime('%m-%d %H:%M')}"
+    return "\n".join(
+        [
+            f"[#{entry.code}] {entry.game_or_platform}",
+            entry.note or "（无备注）",
+            f"{entry.current_count} / {limit} 人｜{lifetime}",
+            f"房间信息：{entry.locator_text}",
+        ]
+    )
+
+
+def _format_open_room_markdown(text: str) -> str:
+    lines: list[str] = []
+    for raw in (text or "开房").splitlines():
+        stripped = raw.strip()
+        if stripped in {"开房菜单", "创建房间"}:
+            lines.append(f"## {stripped}")
+        elif stripped.startswith("[#"):
+            lines.append(f"### {stripped}")
+        elif stripped.startswith("房间信息："):
+            lines.append(f"**房间信息**：{stripped.removeprefix('房间信息：')}")
+        elif stripped:
+            lines.append(stripped)
+        else:
+            lines.append("")
+    return "\n".join(lines).strip() or "开房"
+
+
 @register(
     "astrbot_plugin_util_official",
     "Codex",
-    "QQOfficial 适配版虚拟开盒娱乐插件",
-    "1.2.2",
+    "QQOfficial 适配版娱乐、调试与开房组队插件",
+    "1.3.0",
 )
 class QQOfficialUtilPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -601,14 +750,33 @@ class QQOfficialUtilPlugin(Star):
         self.location_pool: list[str] = []
         self.search_region_pool: list[dict[str, str]] = []
         self._interaction_hook_installed = False
+        self.open_room_store = OpenRoomStore(Path(StarTools.get_data_dir()) / "open_room.db")
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self._load_location_data()
 
     async def initialize(self):
+        await self.open_room_store.initialize()
         self._install_interaction_hook()
+        self._spawn_background_task(self._cleanup_open_room_loop())
 
     @filter.on_platform_loaded()
     async def _on_platform_loaded(self):
         self._install_interaction_hook()
+
+    async def _cleanup_open_room_loop(self) -> None:
+        while True:
+            await asyncio.sleep(60 * 60)
+            try:
+                deleted = await self.open_room_store.delete_expired()
+                if deleted:
+                    logger.info("[QQOfficialUtil] 清理过期开房条目 %s 个。", deleted)
+            except Exception:
+                logger.exception("[QQOfficialUtil] 清理过期开房条目失败。")
+
+    def _spawn_background_task(self, coroutine) -> None:
+        task = asyncio.create_task(coroutine)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     def _install_interaction_hook(self) -> None:
         patched = False
@@ -978,6 +1146,176 @@ class QQOfficialUtilPlugin(Star):
         )
         yield event.plain_result("你按了 B")
         event.stop_event()
+
+    @filter.command("开房")
+    async def open_room_menu_command(self, event: AstrMessageEvent):
+        """打开开房按钮菜单。"""
+        async for result in self._handle_open_room(event):
+            yield result
+
+    @filter.command("开房菜单")
+    async def open_room_named_menu_command(self, event: AstrMessageEvent):
+        """打开开房按钮菜单。"""
+        async for result in self._handle_open_room(event):
+            yield result
+
+    @filter.command("开房创建")
+    async def open_room_create_command(self, event: AstrMessageEvent):
+        """创建当前群可见的开房条目。"""
+        async for result in self._handle_open_room(event):
+            yield result
+
+    @filter.command("开房查找")
+    async def open_room_find_command(self, event: AstrMessageEvent):
+        """查找当前群未过期的开房条目。"""
+        async for result in self._handle_open_room(event):
+            yield result
+
+    @filter.command("开房加入")
+    async def open_room_join_command(self, event: AstrMessageEvent):
+        """加入指定识别码的开房条目。"""
+        async for result in self._handle_open_room(event):
+            yield result
+
+    @filter.command("开房删除")
+    async def open_room_delete_command(self, event: AstrMessageEvent):
+        """删除自己创建的开房条目。"""
+        async for result in self._handle_open_room(event):
+            yield result
+
+    async def _handle_open_room(self, event: AstrMessageEvent):
+        command_text = self._extract_open_room_command_text(event)
+        if command_text is None:
+            return
+        group_id, user_id = self._open_room_group_and_user(event)
+        if not group_id or not user_id:
+            yield event.plain_result("开房插件只能在 QQOfficial 群聊中使用。")
+            event.stop_event()
+            return
+        try:
+            message, entries, keyboard_kind = await self._dispatch_open_room_command(
+                command_text,
+                group_id,
+                user_id,
+            )
+        except ValueError as exc:
+            message, entries, keyboard_kind = f"操作失败：{exc}", [], "menu"
+        except (aiosqlite.Error, OSError):
+            logger.exception("[QQOfficialUtil] 开房数据库操作失败。")
+            message, entries, keyboard_kind = "数据库暂时不可用，请稍后重试。", [], "menu"
+
+        payload = _build_open_room_message_payload(
+            message,
+            entries=entries,
+            kind=keyboard_kind,
+        )
+        async for result in self._send_open_room_group_markdown(event, payload=payload):
+            yield result
+        event.stop_event()
+
+    async def _dispatch_open_room_command(
+        self,
+        command_text: str,
+        group_id: str,
+        user_id: str,
+    ) -> tuple[str, list[OpenRoomEntry], str]:
+        action, payload = self._split_open_room_action(command_text)
+        if action in {"", "菜单", "帮助"}:
+            return _open_room_help_text(), [], "menu"
+        if action == "创建":
+            if not payload:
+                return _open_room_create_help_text(), [], "create"
+            entry = await self.open_room_store.create_entry(
+                group_id=group_id,
+                owner_id=user_id,
+                **parse_create_payload(payload),
+            )
+            return "开房创建成功。\n\n" + _render_open_room_entry(entry), [entry], "entry"
+        if action in {"查找", "搜索", "列表"}:
+            entries = await self.open_room_store.find_entries(group_id, payload)
+            if not entries:
+                return "没有找到可用房间。\n\n可以点“创建短期房”发起一个。", [], "menu"
+            lines = [f"找到 {len(entries)} 个房间："]
+            lines.extend(_render_open_room_entry(entry) for entry in entries)
+            return "\n\n".join(lines), entries, "entries"
+        if action == "加入":
+            code = payload.split(maxsplit=1)[0] if payload else ""
+            if not code:
+                raise ValueError(f"请提供房间识别码，例如：{OPEN_ROOM_JOIN_TEMPLATE}")
+            entry = await self.open_room_store.join_entry(group_id, code, user_id)
+            return "加入成功。\n\n" + _render_open_room_entry(entry), [entry], "entry"
+        if action == "删除":
+            code = payload.split(maxsplit=1)[0] if payload else ""
+            if not code:
+                raise ValueError(f"请提供房间识别码，例如：{OPEN_ROOM_DELETE_TEMPLATE}")
+            deleted = await self.open_room_store.delete_entry(group_id, code, user_id)
+            if not deleted:
+                raise ValueError("房间不存在，或你不是房主。")
+            return "房间已删除。", [], "menu"
+        raise ValueError("未知开房指令。发送“开房”查看按钮菜单。")
+
+    async def _send_open_room_group_markdown(
+        self,
+        event: AstrMessageEvent,
+        *,
+        payload: dict[str, Any],
+    ):
+        if not _is_qqofficial_message_event(event):
+            yield event.plain_result("该指令仅支持 QQOfficial 群聊。")
+            return
+        raw_message = getattr(event.message_obj, "raw_message", None)
+        group_openid = self._extract_open_room_group_openid(event)
+        if raw_message is None or not group_openid:
+            yield event.plain_result(payload["markdown"].content)
+            return
+        _add_passive_reply_context(
+            payload,
+            msg_id=_extract_message_reference_id(raw_message, event.message_obj),
+            msg_seq=getattr(raw_message, "msg_seq", None),
+        )
+        logger.info("[QQOfficialUtil] 开房最终发送 payload: %s", _debug_json(payload))
+        try:
+            await event.bot.api.post_group_message(group_openid=group_openid, **payload)
+        except Exception as exc:
+            logger.exception("[QQOfficialUtil] 发送开房按钮消息失败: %s", exc)
+            yield event.plain_result(f"发送开房按钮失败：{exc}\n\n{payload['markdown'].content}")
+
+    def _extract_open_room_command_text(self, event: AstrMessageEvent) -> str | None:
+        if event.get_platform_name() not in QQOFFICIAL_PLATFORMS:
+            return None
+        if not self._starts_with_bot_mention(event):
+            return None
+        text = (event.get_message_str() or "").strip()
+        if text.startswith(OPEN_ROOM_COMMAND_PREFIX):
+            return text
+        return None
+
+    def _split_open_room_action(self, command_text: str) -> tuple[str, str]:
+        remainder = command_text[len(OPEN_ROOM_COMMAND_PREFIX) :].strip()
+        if not remainder:
+            return "", ""
+        parts = remainder.split(maxsplit=1)
+        return parts[0], parts[1].strip() if len(parts) > 1 else ""
+
+    def _open_room_group_and_user(self, event: AstrMessageEvent) -> tuple[str, str]:
+        return self._extract_open_room_group_openid(event), self._extract_open_room_user_openid(event)
+
+    def _extract_open_room_group_openid(self, event: AstrMessageEvent) -> str:
+        raw_message = getattr(event.message_obj, "raw_message", None)
+        return _first_non_empty_str(
+            getattr(raw_message, "group_openid", None),
+            getattr(raw_message, "group_id", None),
+            event.get_group_id() if hasattr(event, "get_group_id") else None,
+        ) or ""
+
+    def _extract_open_room_user_openid(self, event: AstrMessageEvent) -> str:
+        raw_message = getattr(event.message_obj, "raw_message", None)
+        author = getattr(raw_message, "author", None)
+        return _first_non_empty_str(
+            getattr(author, "member_openid", None),
+            getattr(raw_message, "group_member_openid", None),
+            event.get_sender_id() if hasattr(event, "get_sender_id") else None,
+        ) or ""
 
     def _extract_box_command_text(self, event: AstrMessageEvent) -> str | None:
         if event.get_platform_name() not in QQOFFICIAL_PLATFORMS:
@@ -1430,4 +1768,8 @@ class QQOfficialUtilPlugin(Star):
         return max(minimum, min(maximum, value))
 
     async def terminate(self):
-        pass
+        tasks = list(getattr(self, "_background_tasks", set()))
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
