@@ -39,6 +39,9 @@ class FakeQQOfficialMessageEvent:
     def get_message_str(self):
         return "qqofficial_buttons"
 
+    def get_sender_id(self):
+        return "sender-id"
+
     def plain_result(self, text):
         return text
 
@@ -66,10 +69,17 @@ FakeNonQQEvent.__name__ = "OtherEvent"
 
 
 class FakeGroupMessage:
-    def __init__(self, group_openid="group-openid", message_id="raw-mid", msg_seq=42):
+    def __init__(
+        self,
+        group_openid="group-openid",
+        message_id="raw-mid",
+        msg_seq=42,
+        member_openid="member-openid",
+    ):
         self.group_openid = group_openid
         self.id = message_id
         self.msg_seq = msg_seq
+        self.author = SimpleNamespace(member_openid=member_openid)
 
 
 class FakeC2CAuthor:
@@ -149,6 +159,34 @@ def test_callback_button_keyboard_has_two_callback_buttons():
     assert payload["markdown"]["content"] == module.CALLBACK_BUTTON_PROMPT
     assert payload["keyboard"]["content"]["rows"][0]["buttons"][0]["id"] == module.CALLBACK_BUTTON_A_ID
     assert payload["keyboard"]["content"]["rows"][0]["buttons"][1]["id"] == module.CALLBACK_BUTTON_B_ID
+
+
+def test_restricted_button_keyboard_limits_buttons_to_sender_id():
+    module = load_plugin_module()
+
+    keyboard = module._build_restricted_button_keyboard("member-openid")
+    payload = module._build_restricted_button_message_payload("member-openid")
+
+    assert "content" in keyboard
+    buttons = keyboard["content"]["rows"][0]["buttons"]
+    assert len(buttons) == 2
+    assert buttons[0]["action"]["type"] == 2
+    assert buttons[1]["action"]["type"] == 2
+    assert buttons[0]["action"]["permission"] == {
+        "type": 0,
+        "specify_user_ids": ["member-openid"],
+    }
+    assert buttons[1]["action"]["permission"] == {
+        "type": 0,
+        "specify_user_ids": ["member-openid"],
+    }
+    assert buttons[0]["action"]["data"] == "qqofficial_button_a"
+    assert buttons[1]["action"]["data"] == "qqofficial_button_b"
+    assert payload["msg_type"] == 2
+    assert payload["markdown"]["content"] == module.RESTRICTED_BUTTON_PROMPT
+    assert payload["keyboard"] == keyboard
+    assert payload["keyboard"]["content"]["rows"][0]["buttons"][0]["id"] == module.RESTRICTED_BUTTON_A_ID
+    assert payload["keyboard"]["content"]["rows"][0]["buttons"][1]["id"] == module.RESTRICTED_BUTTON_B_ID
 
 
 def test_button_reply_text_maps_id_and_data():
@@ -271,6 +309,38 @@ def test_callback_button_command_sends_callback_keyboard(monkeypatch):
     assert group_api.calls[0][1]["msg_seq"] == 42
     assert group_api.calls[0][1]["markdown"]["content"] == module.CALLBACK_BUTTON_PROMPT
     assert group_api.calls[0][1]["keyboard"] == module._build_callback_button_keyboard()
+    assert getattr(group_event, "stopped", False) is True
+
+
+def test_restricted_button_command_sends_sender_limited_keyboard(monkeypatch):
+    module = load_plugin_module()
+    plugin = object.__new__(module.QQOfficialUtilPlugin)
+
+    group_api = FakeBotApi()
+    group_event = FakeQQOfficialMessageEvent(module)
+    group_event.message_obj = type(
+        "Obj",
+        (),
+        {
+            "raw_message": FakeGroupMessage(member_openid="member-openid"),
+            "sender": None,
+            "message_id": "mid",
+        },
+    )()
+    group_event.bot = SimpleNamespace(api=group_api)
+    group_event.stop_event = lambda: setattr(group_event, "stopped", True)
+
+    monkeypatch.setattr(module.botpy_message, "GroupMessage", FakeGroupMessage)
+    monkeypatch.setattr(module.botpy_message, "C2CMessage", FakeC2CMessage)
+
+    group_result = _collect_async_gen(plugin.qqofficial_restricted_buttons(group_event))
+
+    assert group_result == []
+    assert group_api.calls[0][0] == "group"
+    assert group_api.calls[0][1]["markdown"]["content"] == module.RESTRICTED_BUTTON_PROMPT
+    assert group_api.calls[0][1]["keyboard"] == module._build_restricted_button_keyboard(
+        "member-openid"
+    )
     assert getattr(group_event, "stopped", False) is True
 
 

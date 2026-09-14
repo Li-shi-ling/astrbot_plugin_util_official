@@ -1,8 +1,8 @@
 # QQOfficial Util
 
-QQOfficial 适配版娱乐工具插件。当前包含虚拟开盒、QQOfficial 按钮调试，以及群聊“开房”组队功能。
+QQOfficial 适配版娱乐工具插件。当前包含虚拟开盒、QQOfficial 按钮调试、群聊“开房”组队功能，以及实验性的 SubAI 免费模型榜单追踪入口。
 
-当前版本：v1.3.0
+当前版本：v1.4.1
 
 ## 使用方式
 
@@ -67,11 +67,30 @@ QQOfficial 适配版娱乐工具插件。当前包含虚拟开盒、QQOfficial �
 
 可以触发一条 `action.type = 1` 的 QQOfficial 回调按钮组件消息，用于继续研究平台是否会投递 `INTERACTION_CREATE`。点击后的回调仍会尝试由插件 ACK 并回复“你按了 A/B”。
 
+发送：
+
+```text
+@机器人 qqofficial_restricted_buttons
+```
+
+可以触发一条 `action.type = 2` 的 QQOfficial 指令按钮组件消息，但按钮权限会设置为发送这条指令的人：
+
+```json
+"permission": {
+  "type": 0,
+  "specify_user_ids": ["发送者 openid/member_openid"]
+}
+```
+
+该指令用于测试 QQOfficial 客户端是否会阻止其他用户操作同一条按钮消息。
+
 ## 配置
 
 `user_list_mode` / `user_list` 只按 QQOfficial 事件里的 sender openid/member_openid 过滤，不是 QQ 号。
 
 腾讯地图增强为可选配置。未开启或接口失败时，插件会使用本地 `china_clean_v2.json` 随机地址。
+
+SubAI 实验功能为可选配置。填写 Artificial Analysis API Key 后会自动同步免费模型榜单；未填写时不会启动自动轮询，但仍可查看状态和本地已有榜单数据。
 
 ## 开房组队
 
@@ -100,3 +119,34 @@ Bot 会发送 QQOfficial Markdown 按钮菜单。按钮均为 `action.type=2` �
 - 创建者计入初始人数，不能重复加入。
 - 房间满员后不再接受加入。
 - 只有房主可以删除自己创建的房间。
+
+## SubAI 实验入口
+
+发送：
+
+```text
+@机器人 subai
+```
+
+Bot 会发送 QQOfficial Markdown 按钮菜单。按钮均为 `action.type=2` 指令按钮，不依赖回调服务。
+
+可用文本指令：
+
+```text
+@机器人 subai状态
+@机器人 subai订阅
+@机器人 subai取消订阅
+@机器人 subai检查
+@机器人 subai模型 Gemini 2.5 Pro
+@机器人 subai榜单 intelligence 10
+@机器人 subai榜单 coding 10
+@机器人 subai榜单 agentic 10
+```
+
+说明：
+
+- SubAI 入口只支持 QQOfficial 群聊，并要求先 @ 机器人。
+- `subai订阅`、`subai取消订阅`、`subai检查` 需要管理员权限。
+- `subai模型 [模型名称]` 会在本地已同步模型中做模糊匹配，最高匹配度低于 0.6 时提示未找到。
+- 榜单会优先尝试输出图片卡片；图片生成或发送失败时回退到 Markdown/文字。
+- SubAI 数据存放在当前插件的数据目录，不会写入原 `astrbot_plugin_SubAI` 插件目录。

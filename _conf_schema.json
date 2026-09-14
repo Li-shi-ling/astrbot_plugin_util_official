@@ -97,5 +97,53 @@
         "hint": "单位秒，范围 1-30。"
       }
     }
+  },
+  "subai": {
+    "description": "SubAI 实验功能配置",
+    "type": "object",
+    "hint": "同步 Artificial Analysis 免费模型榜单。命令入口使用 QQOfficial Markdown + 指令按钮；榜单图片生成失败时会回退文字。",
+    "items": {
+      "api_key": {
+        "description": "Artificial Analysis API Key",
+        "type": "string",
+        "default": "",
+        "hint": "未配置时不会启动自动轮询，但仍可查看状态和已有本地榜单数据。"
+      },
+      "poll_interval_minutes": {
+        "description": "自动轮询间隔（分钟）",
+        "type": "int",
+        "default": 120,
+        "hint": "最小 15 分钟。"
+      },
+      "intelligence_threshold": {
+        "description": "高分模型关注门槛",
+        "type": "float",
+        "default": 47.0,
+        "hint": "检测 Intelligence 分数达到该值的新模型或变化。"
+      },
+      "request_timeout_seconds": {
+        "description": "请求超时时间（秒）",
+        "type": "int",
+        "default": 20,
+        "hint": "范围 5-120 秒。"
+      },
+      "max_retries": {
+        "description": "请求失败重试次数",
+        "type": "int",
+        "default": 2,
+        "hint": "范围 0-5。"
+      },
+      "card_theme": {
+        "description": "榜单图片主题",
+        "type": "string",
+        "options": [
+          "analytics",
+          "brutalist",
+          "paper"
+        ],
+        "default": "analytics",
+        "hint": "用于 SubAI 榜单/通知卡片，图片生成或发送失败时会自动回退文字。"
+      }
+    }
   }
 }

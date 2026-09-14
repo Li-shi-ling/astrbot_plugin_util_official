@@ -1,5 +1,19 @@
 # 更新日志
 
+## v1.4.1
+
+- 新增 `qqofficial_restricted_buttons` 调试指令，发送仅限当前指令发送者可操作的 `action.type=2` 指令按钮。
+- 指定用户按钮会从 QQOfficial 事件中提取发送者 openid/member_openid，并写入 `permission.type=0` 与 `specify_user_ids`，用于验证客户端是否会阻止其他用户点击。
+- 修正回调按钮识别范围，`qqofficial_callback_buttons` 发送的 callback A/B 也会被本插件回调处理逻辑识别。
+
+## v1.4.0
+
+- 将 `astrbot_plugin_SubAI` 的核心同步、榜单、订阅能力迁入当前实验插件的 `core/subai` 目录。
+- 新增 QQOfficial 友好的 SubAI 显式指令：`subai`、`subai菜单`、`subai状态`、`subai订阅`、`subai取消订阅`、`subai检查`、`subai榜单`。
+- 新增 SubAI Markdown 按钮菜单，全部使用 `action.type=2` 指令按钮；榜单优先尝试图片输出，图片生成或发送失败时回退文字。
+- 新增 `subai模型 [模型名称]` 按钮模板和文本指令，按名称/slug/模型 ID 做本地模糊匹配，阈值为 0.6。
+- 新增 SubAI 配置模板，数据写入当前插件数据目录下的 `subai.sqlite3`，不修改 AstrBot 源码。
+
 ## v1.3.0
 
 - 新增 QQOfficial 群聊“开房”组队功能，支持创建短期/长期房间、查找、加入和房主删除。

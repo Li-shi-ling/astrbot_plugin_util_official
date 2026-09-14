@@ -21,13 +21,15 @@ from botpy.types.message import MarkdownPayload
 
 import astrbot.api.message_components as Comp
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.config import AstrBotConfig
 
 try:
     from .core.open_room_parser import parse_create_payload
     from .core.open_room_storage import OpenRoomEntry, OpenRoomStore
+    from .core.subai import SubAIConfig, SubAIRuntime
+    from .core.subai.runtime import VALID_RANK_METRICS
 except ImportError:
     import sys
 
@@ -36,6 +38,8 @@ except ImportError:
         sys.path.insert(0, str(plugin_dir))
     from core.open_room_parser import parse_create_payload
     from core.open_room_storage import OpenRoomEntry, OpenRoomStore
+    from core.subai import SubAIConfig, SubAIRuntime
+    from core.subai.runtime import VALID_RANK_METRICS
 
 QQOFFICIAL_PLATFORMS = {"qq_official", "qq_official_webhook"}
 QQOFFICIAL_MESSAGE_EVENT_NAMES = {
@@ -56,22 +60,39 @@ CALLBACK_BUTTON_A_ID = "qqofficial_callback_btn_a"
 CALLBACK_BUTTON_B_ID = "qqofficial_callback_btn_b"
 CALLBACK_BUTTON_A_DATA = "callback_button_a"
 CALLBACK_BUTTON_B_DATA = "callback_button_b"
+RESTRICTED_BUTTON_A_ID = "qqofficial_restricted_btn_a"
+RESTRICTED_BUTTON_B_ID = "qqofficial_restricted_btn_b"
 BUTTON_PROMPT = "请选择一个按钮"
 CALLBACK_BUTTON_PROMPT = "请选择一个回调按钮"
+RESTRICTED_BUTTON_PROMPT = "请选择一个仅发送者可操作的按钮"
 BUTTON_A_LABEL = "按钮 A"
 BUTTON_B_LABEL = "按钮 B"
 CALLBACK_BUTTON_A_LABEL = "回调 A"
 CALLBACK_BUTTON_B_LABEL = "回调 B"
+RESTRICTED_BUTTON_A_LABEL = "仅本人 A"
+RESTRICTED_BUTTON_B_LABEL = "仅本人 B"
 BUTTON_A_VISITED_LABEL = "已按下 A"
 BUTTON_B_VISITED_LABEL = "已按下 B"
 CALLBACK_BUTTON_A_VISITED_LABEL = "已回调 A"
 CALLBACK_BUTTON_B_VISITED_LABEL = "已回调 B"
+RESTRICTED_BUTTON_A_VISITED_LABEL = "本人已按 A"
+RESTRICTED_BUTTON_B_VISITED_LABEL = "本人已按 B"
 QQOFFICIAL_INTERACTION_INTENT = 1 << 26
 OPEN_ROOM_COMMAND_PREFIX = "开房"
 OPEN_ROOM_CREATE_TEMPLATE = "开房创建 房间码或邀请链接｜游戏/平台｜备注=玩法时间｜初始=1｜上限=4"
 OPEN_ROOM_LONG_TERM_TEMPLATE = "开房创建 好友码或服务器地址｜游戏/平台｜备注=长期可加｜长期"
 OPEN_ROOM_JOIN_TEMPLATE = "开房加入 #RM0001"
 OPEN_ROOM_DELETE_TEMPLATE = "开房删除 #RM0001"
+SUBAI_COMMAND_PREFIX = "subai"
+SUBAI_MENU_TEXT = "subai菜单"
+SUBAI_STATUS_TEXT = "subai状态"
+SUBAI_SUBSCRIBE_TEXT = "subai订阅"
+SUBAI_UNSUBSCRIBE_TEXT = "subai取消订阅"
+SUBAI_CHECK_TEXT = "subai检查"
+SUBAI_RANK_INTELLIGENCE_TEXT = "subai榜单 intelligence 10"
+SUBAI_RANK_CODING_TEXT = "subai榜单 coding 10"
+SUBAI_RANK_AGENTIC_TEXT = "subai榜单 agentic 10"
+SUBAI_MODEL_DETAIL_TEMPLATE = "subai模型 [模型名称]"
 TENCENT_MAP_API_BASE = "https://apis.map.qq.com"
 TENCENT_MAP_PLACE_SEARCH_PATH = "/ws/place/v1/search"
 TENCENT_MAP_STATIC_PATH = "/ws/staticmap/v2/"
@@ -178,6 +199,14 @@ def _build_button_keyboard() -> qinline.Keyboard:
 
 
 def _build_button_payload(spec: QQOfficialButtonSpec) -> qinline.Button:
+    return _build_command_button_payload(spec, permission={"type": 2})
+
+
+def _build_command_button_payload(
+    spec: QQOfficialButtonSpec,
+    *,
+    permission: dict[str, Any],
+) -> qinline.Button:
     return {
         "id": spec.button_id,
         "render_data": {
@@ -187,14 +216,47 @@ def _build_button_payload(spec: QQOfficialButtonSpec) -> qinline.Button:
         },
         "action": {
             "type": 2,
-            "permission": {
-                "type": 2,
-            },
+            "permission": dict(permission),
             "data": spec.data,
             "reply": True,
             "enter": False,
             "unsupport_tips": "当前客户端不支持该按钮",
         },
+    }
+
+
+def _build_restricted_button_keyboard(allowed_user_id: str) -> qinline.Keyboard:
+    permission = {
+        "type": 0,
+        "specify_user_ids": [allowed_user_id],
+    }
+    return {
+        "content": {
+            "rows": [
+                {
+                    "buttons": [
+                        _build_command_button_payload(
+                            QQOfficialButtonSpec(
+                                button_id=RESTRICTED_BUTTON_A_ID,
+                                label=RESTRICTED_BUTTON_A_LABEL,
+                                visited_label=RESTRICTED_BUTTON_A_VISITED_LABEL,
+                                data=BUTTON_A_DATA,
+                            ),
+                            permission=permission,
+                        ),
+                        _build_command_button_payload(
+                            QQOfficialButtonSpec(
+                                button_id=RESTRICTED_BUTTON_B_ID,
+                                label=RESTRICTED_BUTTON_B_LABEL,
+                                visited_label=RESTRICTED_BUTTON_B_VISITED_LABEL,
+                                data=BUTTON_B_DATA,
+                            ),
+                            permission=permission,
+                        ),
+                    ]
+                }
+            ]
+        }
     }
 
 
@@ -280,6 +342,14 @@ def _build_callback_button_message_payload() -> dict[str, Any]:
     }
 
 
+def _build_restricted_button_message_payload(allowed_user_id: str) -> dict[str, Any]:
+    return {
+        "msg_type": 2,
+        "markdown": MarkdownPayload(content=RESTRICTED_BUTTON_PROMPT),
+        "keyboard": _build_restricted_button_keyboard(allowed_user_id),
+    }
+
+
 def _build_open_room_button(button_id: str, label: str, data: str) -> qinline.Button:
     return _build_button_payload(
         QQOfficialButtonSpec(
@@ -359,6 +429,70 @@ def _build_open_room_message_payload(
         "keyboard": _build_open_room_keyboard(entries, kind=kind),
     }
 
+
+
+def _build_subai_button(button_id: str, label: str, data: str) -> qinline.Button:
+    return _build_button_payload(
+        QQOfficialButtonSpec(
+            button_id=button_id,
+            label=label,
+            visited_label=label,
+            data=data,
+        )
+    )
+
+
+def _build_subai_keyboard(kind: str = "menu") -> qinline.Keyboard:
+    if kind == "rank":
+        rows = [
+            {
+                "buttons": [
+                    _build_subai_button("subai_rank_intelligence", "智力榜", SUBAI_RANK_INTELLIGENCE_TEXT),
+                    _build_subai_button("subai_rank_coding", "编程榜", SUBAI_RANK_CODING_TEXT),
+                    _build_subai_button("subai_rank_agentic", "代理榜", SUBAI_RANK_AGENTIC_TEXT),
+                ]
+            },
+            {
+                "buttons": [
+                    _build_subai_button("subai_model_detail", "查看模型", SUBAI_MODEL_DETAIL_TEMPLATE),
+                    _build_subai_button("subai_status", "状态", SUBAI_STATUS_TEXT),
+                    _build_subai_button("subai_menu", "菜单", SUBAI_MENU_TEXT),
+                ]
+            },
+        ]
+    else:
+        rows = [
+            {
+                "buttons": [
+                    _build_subai_button("subai_status", "状态", SUBAI_STATUS_TEXT),
+                    _build_subai_button("subai_check", "手动检查", SUBAI_CHECK_TEXT),
+                    _build_subai_button("subai_rank_menu", "榜单", SUBAI_RANK_INTELLIGENCE_TEXT),
+                    _build_subai_button("subai_model_detail", "查看模型", SUBAI_MODEL_DETAIL_TEMPLATE),
+                ]
+            },
+            {
+                "buttons": [
+                    _build_subai_button("subai_subscribe", "订阅", SUBAI_SUBSCRIBE_TEXT),
+                    _build_subai_button("subai_unsubscribe", "取消订阅", SUBAI_UNSUBSCRIBE_TEXT),
+                ]
+            },
+            {
+                "buttons": [
+                    _build_subai_button("subai_rank_intelligence", "智力榜", SUBAI_RANK_INTELLIGENCE_TEXT),
+                    _build_subai_button("subai_rank_coding", "编程榜", SUBAI_RANK_CODING_TEXT),
+                    _build_subai_button("subai_rank_agentic", "代理榜", SUBAI_RANK_AGENTIC_TEXT),
+                ]
+            },
+        ]
+    return {"content": {"rows": rows[:5]}}
+
+
+def _build_subai_message_payload(text: str, *, kind: str = "menu") -> dict[str, Any]:
+    return {
+        "msg_type": 2,
+        "markdown": MarkdownPayload(content=_format_subai_markdown(text)),
+        "keyboard": _build_subai_keyboard(kind=kind),
+    }
 
 
 def _build_button_reply_payload(text: str) -> dict[str, Any]:
@@ -736,11 +870,47 @@ def _format_open_room_markdown(text: str) -> str:
     return "\n".join(lines).strip() or "开房"
 
 
+def _subai_menu_text() -> str:
+    return (
+        "SubAI 菜单\n"
+        "追踪 Artificial Analysis 免费模型榜单变化。\n\n"
+        "可用操作：\n"
+        "subai状态\n"
+        "subai订阅\n"
+        "subai取消订阅\n"
+        "subai检查\n"
+        "subai模型 [模型名称]\n"
+        "subai榜单 intelligence|coding|agentic [5-50]"
+    )
+
+
+def _format_subai_markdown(text: str) -> str:
+    lines: list[str] = []
+    for raw in (text or "SubAI").splitlines():
+        stripped = raw.strip()
+        if stripped in {"SubAI 菜单", "SubAI 状态"}:
+            lines.append(f"## {stripped}")
+        elif stripped.startswith("SubAI "):
+            lines.append(f"## {stripped}")
+        elif stripped.startswith("#"):
+            lines.append(stripped)
+        elif stripped.startswith("Top "):
+            lines.append(f"### {stripped}")
+        elif "：" in stripped and not stripped.startswith("http"):
+            name, value = stripped.split("：", 1)
+            lines.append(f"**{name}**：{value}")
+        elif stripped:
+            lines.append(stripped)
+        else:
+            lines.append("")
+    return "\n".join(lines).strip() or "SubAI"
+
+
 @register(
     "astrbot_plugin_util_official",
     "Codex",
-    "QQOfficial 适配版娱乐、调试与开房组队插件",
-    "1.3.0",
+    "QQOfficial 适配版娱乐、调试、开房组队与 SubAI 实验插件",
+    "1.4.1",
 )
 class QQOfficialUtilPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -751,11 +921,18 @@ class QQOfficialUtilPlugin(Star):
         self.search_region_pool: list[dict[str, str]] = []
         self._interaction_hook_installed = False
         self.open_room_store = OpenRoomStore(Path(StarTools.get_data_dir()) / "open_room.db")
+        self.subai_config = self._build_subai_config()
+        self.subai_runtime = SubAIRuntime(
+            star=self,
+            context=context,
+            config=self.subai_config,
+        )
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._load_location_data()
 
     async def initialize(self):
         await self.open_room_store.initialize()
+        await self.subai_runtime.initialize()
         self._install_interaction_hook()
         self._spawn_background_task(self._cleanup_open_room_loop())
 
@@ -887,9 +1064,16 @@ class QQOfficialUtilPlugin(Star):
             "[QQOfficialUtil] 解析按钮回调上下文: %s",
             _debug_json(_interaction_to_debug_dict(context)),
         )
-        if context.button_id not in {BUTTON_A_ID, BUTTON_B_ID} and context.button_data not in {
+        if context.button_id not in {
+            BUTTON_A_ID,
+            BUTTON_B_ID,
+            CALLBACK_BUTTON_A_ID,
+            CALLBACK_BUTTON_B_ID,
+        } and context.button_data not in {
             BUTTON_A_DATA,
             BUTTON_B_DATA,
+            CALLBACK_BUTTON_A_DATA,
+            CALLBACK_BUTTON_B_DATA,
         }:
             logger.info(
                 "[QQOfficialUtil] 忽略非本插件按钮回调: button_id=%r, button_data=%r",
@@ -1017,6 +1201,40 @@ class QQOfficialUtilPlugin(Star):
             payload=_build_callback_button_message_payload(),
         ):
             yield result
+
+    @filter.command("qqofficial_restricted_buttons")
+    async def qqofficial_restricted_buttons(self, event: AstrMessageEvent):
+        allowed_user_id = self._extract_button_sender_openid(event)
+        if not allowed_user_id:
+            logger.warning(
+                "[QQOfficialUtil] qqofficial_restricted_buttons 拒绝：无法提取发送者 openid。event_class=%s.%s",
+                type(event).__module__,
+                type(event).__name__,
+            )
+            yield event.plain_result("未找到发送者 openid/member_openid，无法发送指定用户按钮。")
+            return
+
+        logger.info(
+            "[QQOfficialUtil] qqofficial_restricted_buttons 使用发送者 ID 限制按钮: allowed_user_id=%s",
+            allowed_user_id,
+        )
+        async for result in self._send_qqofficial_button_message(
+            event,
+            command_name="qqofficial_restricted_buttons",
+            payload=_build_restricted_button_message_payload(allowed_user_id),
+        ):
+            yield result
+
+    def _extract_button_sender_openid(self, event: AstrMessageEvent) -> str:
+        raw_message = getattr(event.message_obj, "raw_message", None)
+        author = getattr(raw_message, "author", None)
+        return _first_non_empty_str(
+            getattr(author, "member_openid", None),
+            getattr(raw_message, "group_member_openid", None),
+            getattr(author, "user_openid", None),
+            getattr(raw_message, "user_openid", None),
+            event.get_sender_id() if hasattr(event, "get_sender_id") else None,
+        ) or ""
 
     async def _send_qqofficial_button_message(
         self,
@@ -1183,6 +1401,63 @@ class QQOfficialUtilPlugin(Star):
         async for result in self._handle_open_room(event):
             yield result
 
+    @filter.command("subai")
+    async def subai_menu_command(self, event: AstrMessageEvent):
+        """打开 SubAI 按钮菜单。"""
+        async for result in self._handle_subai(event):
+            yield result
+
+    @filter.command("SubAI")
+    async def subai_capital_menu_command(self, event: AstrMessageEvent):
+        """打开 SubAI 按钮菜单。"""
+        async for result in self._handle_subai(event):
+            yield result
+
+    @filter.command("subai菜单")
+    async def subai_named_menu_command(self, event: AstrMessageEvent):
+        """打开 SubAI 按钮菜单。"""
+        async for result in self._handle_subai(event):
+            yield result
+
+    @filter.command("subai状态")
+    async def subai_status_command(self, event: AstrMessageEvent):
+        """查看 SubAI 同步和订阅状态。"""
+        async for result in self._handle_subai(event):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("subai订阅")
+    async def subai_subscribe_command(self, event: AstrMessageEvent):
+        """订阅当前会话的 SubAI 高分模型变化。"""
+        async for result in self._handle_subai(event):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("subai取消订阅")
+    async def subai_unsubscribe_command(self, event: AstrMessageEvent):
+        """取消当前会话的 SubAI 高分模型变化订阅。"""
+        async for result in self._handle_subai(event):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("subai检查")
+    async def subai_check_command(self, event: AstrMessageEvent):
+        """手动同步一次 Artificial Analysis 免费模型榜单。"""
+        async for result in self._handle_subai(event):
+            yield result
+
+    @filter.command("subai榜单")
+    async def subai_rank_command(self, event: AstrMessageEvent):
+        """查看 SubAI 模型榜单。"""
+        async for result in self._handle_subai(event):
+            yield result
+
+    @filter.command("subai模型")
+    async def subai_model_command(self, event: AstrMessageEvent):
+        """按名称模糊查看单个 SubAI 模型。"""
+        async for result in self._handle_subai(event):
+            yield result
+
     async def _handle_open_room(self, event: AstrMessageEvent):
         command_text = self._extract_open_room_command_text(event)
         if command_text is None:
@@ -1316,6 +1591,115 @@ class QQOfficialUtilPlugin(Star):
             getattr(raw_message, "group_member_openid", None),
             event.get_sender_id() if hasattr(event, "get_sender_id") else None,
         ) or ""
+
+    async def _handle_subai(self, event: AstrMessageEvent):
+        command_text = self._extract_subai_command_text(event)
+        if command_text is None:
+            return
+        if not _is_qqofficial_message_event(event):
+            yield event.plain_result("SubAI 实验入口仅支持 QQOfficial 群聊。")
+            event.stop_event()
+            return
+        group_openid = self._extract_open_room_group_openid(event)
+        if not group_openid:
+            yield event.plain_result("SubAI 实验入口只能在 QQOfficial 群聊中使用。")
+            event.stop_event()
+            return
+        try:
+            message, keyboard_kind, image_path = await self._dispatch_subai_command(
+                command_text,
+                event,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[QQOfficialUtil] SubAI 指令处理失败: %s", exc)
+            message, keyboard_kind, image_path = f"SubAI 操作失败：{exc}", "menu", None
+
+        if image_path:
+            try:
+                yield event.chain_result(MessageChain().file_image(image_path).chain)
+                event.stop_event()
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[QQOfficialUtil] SubAI 图片回复失败，回退 Markdown: %s", exc)
+
+        payload = _build_subai_message_payload(message, kind=keyboard_kind)
+        async for result in self._send_subai_group_markdown(event, payload=payload):
+            yield result
+        event.stop_event()
+
+    async def _dispatch_subai_command(
+        self,
+        command_text: str,
+        event: AstrMessageEvent,
+    ) -> tuple[str, str, str | None]:
+        action, payload = self._split_subai_action(command_text)
+        if action in {"", "菜单", "帮助", "help", "menu"}:
+            return _subai_menu_text(), "menu", None
+        if action in {"状态", "status"}:
+            return await self.subai_runtime.status(event.unified_msg_origin), "menu", None
+        if action in {"订阅", "subscribe"}:
+            return await self.subai_runtime.subscribe(event.unified_msg_origin), "menu", None
+        if action in {"取消订阅", "unsubscribe"}:
+            return await self.subai_runtime.unsubscribe(event.unified_msg_origin), "menu", None
+        if action in {"检查", "check"}:
+            return await self.subai_runtime.manual_check(), "menu", None
+        if action in {"冷却", "cooldown"}:
+            return await self.subai_runtime.manual_cooldown_hint(), "menu", None
+        if action in {"榜单", "rank"}:
+            metric, limit = self._parse_subai_rank_payload(payload)
+            result = await self.subai_runtime.rank(metric, limit)
+            return result.text, "rank", result.image_path
+        if action in {"模型", "model"}:
+            return await self.subai_runtime.model_detail(payload), "rank", None
+        return "未知 SubAI 指令。发送“subai”查看按钮菜单。", "menu", None
+
+    def _parse_subai_rank_payload(self, payload: str) -> tuple[str, str | None]:
+        parts = payload.split()
+        metric = parts[0].strip().lower() if parts else "intelligence"
+        if metric not in VALID_RANK_METRICS:
+            metric = parts[0].strip().lower() if parts else "intelligence"
+        limit = parts[1].strip() if len(parts) > 1 else None
+        return metric, limit
+
+    async def _send_subai_group_markdown(
+        self,
+        event: AstrMessageEvent,
+        *,
+        payload: dict[str, Any],
+    ):
+        raw_message = getattr(event.message_obj, "raw_message", None)
+        group_openid = self._extract_open_room_group_openid(event)
+        if raw_message is None or not group_openid:
+            yield event.plain_result(payload["markdown"].content)
+            return
+        _add_passive_reply_context(
+            payload,
+            msg_id=_extract_message_reference_id(raw_message, event.message_obj),
+            msg_seq=getattr(raw_message, "msg_seq", None),
+        )
+        logger.info("[QQOfficialUtil] SubAI 最终发送 payload: %s", _debug_json(payload))
+        try:
+            await event.bot.api.post_group_message(group_openid=group_openid, **payload)
+        except Exception as exc:
+            logger.exception("[QQOfficialUtil] 发送 SubAI 按钮消息失败: %s", exc)
+            yield event.plain_result(f"发送 SubAI 按钮失败：{exc}\n\n{payload['markdown'].content}")
+
+    def _extract_subai_command_text(self, event: AstrMessageEvent) -> str | None:
+        if event.get_platform_name() not in QQOFFICIAL_PLATFORMS:
+            return None
+        if not self._starts_with_bot_mention(event):
+            return None
+        text = (event.get_message_str() or "").strip()
+        if text.casefold().startswith(SUBAI_COMMAND_PREFIX):
+            return text
+        return None
+
+    def _split_subai_action(self, command_text: str) -> tuple[str, str]:
+        remainder = command_text[len(SUBAI_COMMAND_PREFIX) :].strip()
+        if not remainder:
+            return "", ""
+        parts = remainder.split(maxsplit=1)
+        return parts[0], parts[1].strip() if len(parts) > 1 else ""
 
     def _extract_box_command_text(self, event: AstrMessageEvent) -> str | None:
         if event.get_platform_name() not in QQOFFICIAL_PLATFORMS:
@@ -1747,6 +2131,27 @@ class QQOfficialUtilPlugin(Star):
                 return value
         return self.config.get(key, default)
 
+    def _get_subai_config(self, key: str, default=None):
+        subai = self.config.get("subai", {})
+        if hasattr(subai, "get"):
+            value = subai.get(key, None)
+            if value is not None:
+                return value
+        prefixed_key = f"subai_{key}"
+        return self.config.get(prefixed_key, self.config.get(key, default))
+
+    def _build_subai_config(self) -> SubAIConfig:
+        return SubAIConfig.from_mapping(
+            {
+                "api_key": self._get_subai_config("api_key", ""),
+                "poll_interval_minutes": self._get_subai_config("poll_interval_minutes", 120),
+                "intelligence_threshold": self._get_subai_config("intelligence_threshold", 47.0),
+                "request_timeout_seconds": self._get_subai_config("request_timeout_seconds", 20),
+                "max_retries": self._get_subai_config("max_retries", 2),
+                "card_theme": self._get_subai_config("card_theme", "analytics"),
+            }
+        )
+
     def _summarize_api_payload(self, payload) -> str:
         if not isinstance(payload, dict):
             return repr(payload)[:300]
@@ -1768,6 +2173,7 @@ class QQOfficialUtilPlugin(Star):
         return max(minimum, min(maximum, value))
 
     async def terminate(self):
+        await self.subai_runtime.terminate()
         tasks = list(getattr(self, "_background_tasks", set()))
         for task in tasks:
             task.cancel()
