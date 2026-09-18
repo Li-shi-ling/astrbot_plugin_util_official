@@ -1,6 +1,6 @@
 name: astrbot_plugin_util_official
 display_name: QQOfficial Util
-desc: QQOfficial 适配版娱乐、调试、开房组队与 SubAI 实验插件
-version: v1.4.1
+desc: QQOfficial 适配版娱乐、调试、开房组队、SubAI 与左轮实验插件
+version: v1.5.0
 author: lishining,Codex
 repo: "https://github.com/Li-shi-ling/astrbot_plugin_util_official"

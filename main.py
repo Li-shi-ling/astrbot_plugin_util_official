@@ -28,6 +28,7 @@ from astrbot.core.config import AstrBotConfig
 try:
     from .core.open_room_parser import parse_create_payload
     from .core.open_room_storage import OpenRoomEntry, OpenRoomStore
+    from .core.revolver_game import RevolverConfig, SimpleRevolverGame
     from .core.subai import SubAIConfig, SubAIRuntime
     from .core.subai.runtime import VALID_RANK_METRICS
 except ImportError:
@@ -38,6 +39,7 @@ except ImportError:
         sys.path.insert(0, str(plugin_dir))
     from core.open_room_parser import parse_create_payload
     from core.open_room_storage import OpenRoomEntry, OpenRoomStore
+    from core.revolver_game import RevolverConfig, SimpleRevolverGame
     from core.subai import SubAIConfig, SubAIRuntime
     from core.subai.runtime import VALID_RANK_METRICS
 
@@ -906,11 +908,55 @@ def _format_subai_markdown(text: str) -> str:
     return "\n".join(lines).strip() or "SubAI"
 
 
+REVOLVER_TRIGGER_TEXTS = [
+    "扳机扣动，枪声炸响",
+    "手指一勾，子弹出膛",
+    "火光四射，雷霆一击",
+    "扣动扳机，枪鸣如龙",
+    "扳机压下，子弹呼啸",
+]
+REVOLVER_MISS_TEXTS = [
+    "咔哒！{sender_nickname} 空弹逃生！",
+    "啪嗒！{sender_nickname} 安然无恙！",
+    "咔嚓！{sender_nickname} 幸运逃生！",
+    "嗒！{sender_nickname} 死神擦肩！",
+    "咔！{sender_nickname} 命不该绝！",
+]
+REVOLVER_LOAD_TEXTS = [
+    "子弹上膛，杀机四伏",
+    "装填完成，危机降临",
+    "弹药就位，命悬一线",
+    "子弹就位，死神降临",
+    "装弹完毕，杀气腾腾",
+]
+REVOLVER_GAME_END_TEXTS = [
+    "游戏结束，胜负已分",
+    "尘埃落定，生死已定",
+    "终局已至，命运裁决",
+    "游戏落幕，生者凯旋",
+    "终章奏响，胜负分明",
+]
+REVOLVER_STATUS_TEXTS = [
+    "游戏进行中",
+    "对决已开始",
+    "生死博弈",
+    "命悬一线",
+    "紧张刺激",
+]
+REVOLVER_REACTION_TEXTS = [
+    "{sender_nickname} 浑身一颤",
+    "{sender_nickname} 脸色煞白",
+    "{sender_nickname} 冷汗直冒",
+    "{sender_nickname} 瑟瑟发抖",
+    "{sender_nickname} 心惊胆战",
+]
+
+
 @register(
     "astrbot_plugin_util_official",
     "Codex",
-    "QQOfficial 适配版娱乐、调试、开房组队与 SubAI 实验插件",
-    "1.4.1",
+    "QQOfficial 适配版娱乐、调试、开房组队、SubAI 与左轮实验插件",
+    "1.5.0",
 )
 class QQOfficialUtilPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -927,6 +973,7 @@ class QQOfficialUtilPlugin(Star):
             context=context,
             config=self.subai_config,
         )
+        self.revolver_game = SimpleRevolverGame(self._build_revolver_config())
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._load_location_data()
 
@@ -1401,6 +1448,118 @@ class QQOfficialUtilPlugin(Star):
         async for result in self._handle_open_room(event):
             yield result
 
+    @filter.command("装填")
+    async def revolver_load_command(
+        self,
+        event: AstrMessageEvent,
+        bullet_count: int = -1,
+        chamber_count: int = -1,
+    ):
+        """装填左轮。"""
+        group_id = self._extract_revolver_group_id(event)
+        if not group_id:
+            yield event.plain_result("仅限群聊使用。")
+            return
+        try:
+            result = self.revolver_game.load(
+                group_id,
+                bullet_count=bullet_count if bullet_count > 0 else None,
+                chamber_count=chamber_count if chamber_count > 0 else None,
+            )
+        except ValueError as exc:
+            yield event.plain_result(str(exc))
+            return
+        user_name = self._get_revolver_user_name(event)
+        load_text = random.choice(REVOLVER_LOAD_TEXTS)
+        yield event.plain_result(
+            f"🔫 {user_name}：{load_text}\n"
+            f"弹膛：{result.chamber_count}\n"
+            f"子弹：{result.shown_bullet_count}\n"
+            "使用“开枪”扣动扳机。"
+        )
+
+    @filter.command("开枪")
+    async def revolver_shoot_command(self, event: AstrMessageEvent):
+        """扣动左轮扳机。"""
+        group_id = self._extract_revolver_group_id(event)
+        if not group_id:
+            yield event.plain_result("仅限群聊使用。")
+            return
+        user_name = self._get_revolver_user_name(event)
+        try:
+            result = self.revolver_game.shoot(group_id)
+        except ValueError as exc:
+            yield event.plain_result(f"{user_name}，{exc}")
+            return
+        if result.hit:
+            trigger_text = random.choice(REVOLVER_TRIGGER_TEXTS)
+            reaction_text = random.choice(REVOLVER_REACTION_TEXTS).format(
+                sender_nickname=user_name
+            )
+            lines = [
+                f"💥 {trigger_text}",
+                f"😱 {reaction_text}",
+            ]
+        else:
+            lines = [
+                random.choice(REVOLVER_MISS_TEXTS).format(sender_nickname=user_name),
+            ]
+        if result.ended:
+            end_text = random.choice(REVOLVER_GAME_END_TEXTS)
+            lines.append(f"🏁 {end_text}")
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("结束游戏")
+    async def revolver_end_command(self, event: AstrMessageEvent):
+        """结束当前左轮游戏。"""
+        group_id = self._extract_revolver_group_id(event)
+        if not group_id:
+            yield event.plain_result("仅限群聊使用。")
+            return
+        if self.revolver_game.end(group_id):
+            yield event.plain_result("本局左轮游戏已结束。")
+        else:
+            yield event.plain_result("当前没有正在进行的左轮游戏。")
+
+    @filter.command_group("左轮")
+    def revolver_group(self):
+        """左轮手枪游戏指令组。"""
+        pass
+
+    @revolver_group.command("状态")
+    async def revolver_status_command(self, event: AstrMessageEvent):
+        """查看当前左轮游戏状态。"""
+        group_id = self._extract_revolver_group_id(event)
+        if not group_id:
+            yield event.plain_result("仅限群聊使用。")
+            return
+        game = self.revolver_game.status(group_id)
+        if game is None:
+            yield event.plain_result("没有游戏进行中。使用“装填”开始一局。")
+            return
+        current_status = "有子弹" if game.chambers[game.current] else "安全"
+        status_text = random.choice(REVOLVER_STATUS_TEXTS)
+        yield event.plain_result(
+            f"🔫 {status_text}\n"
+            f"弹膛：{game.chamber_count}\n"
+            f"当前弹膛：第 {game.current + 1} 膛\n"
+            f"当前状态：{current_status}"
+        )
+
+    @revolver_group.command("帮助")
+    async def revolver_help_command(self, event: AstrMessageEvent):
+        """显示左轮游戏帮助。"""
+        yield event.plain_result(
+            "🔫 左轮手枪指令\n"
+            "装填：随机装填子弹\n"
+            "装填 3：装填 3 发子弹\n"
+            "装填 3 6：6 个弹膛里装 3 发子弹\n"
+            "开枪：扣动扳机\n"
+            "左轮 状态：查看当前局面\n"
+            "左轮 帮助：查看帮助\n"
+            "结束游戏：结束当前局"
+        )
+
     @filter.command("subai")
     async def subai_menu_command(self, event: AstrMessageEvent):
         """打开 SubAI 按钮菜单。"""
@@ -1591,6 +1750,24 @@ class QQOfficialUtilPlugin(Star):
             getattr(raw_message, "group_member_openid", None),
             event.get_sender_id() if hasattr(event, "get_sender_id") else None,
         ) or ""
+
+    def _extract_revolver_group_id(self, event: AstrMessageEvent) -> str:
+        raw_message = getattr(event.message_obj, "raw_message", None)
+        return _first_non_empty_str(
+            getattr(raw_message, "group_openid", None),
+            getattr(raw_message, "group_id", None),
+            event.get_group_id() if hasattr(event, "get_group_id") else None,
+        ) or ""
+
+    def _get_revolver_user_name(self, event: AstrMessageEvent) -> str:
+        raw_message = getattr(event.message_obj, "raw_message", None)
+        author = getattr(raw_message, "author", None)
+        return _first_non_empty_str(
+            event.get_sender_name() if hasattr(event, "get_sender_name") else None,
+            getattr(author, "member_openid", None),
+            getattr(author, "user_openid", None),
+            event.get_sender_id() if hasattr(event, "get_sender_id") else None,
+        ) or "玩家"
 
     async def _handle_subai(self, event: AstrMessageEvent):
         command_text = self._extract_subai_command_text(event)
@@ -2151,6 +2328,46 @@ class QQOfficialUtilPlugin(Star):
                 "card_theme": self._get_subai_config("card_theme", "analytics"),
             }
         )
+
+    def _get_revolver_config(self, key: str, default=None):
+        revolver = self.config.get("revolver", {})
+        if hasattr(revolver, "get"):
+            value = revolver.get(key, None)
+            if value is not None:
+                return value
+        prefixed_key = f"revolver_{key}"
+        return self.config.get(prefixed_key, self.config.get(key, default))
+
+    def _get_bool_config_value(self, key: str, default: bool) -> bool:
+        value = self._get_revolver_config(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on", "是", "开"}
+        return bool(value)
+
+    def _build_revolver_config(self) -> RevolverConfig:
+        return RevolverConfig(
+            timeout_seconds=self._get_int_revolver_config("timeout_seconds", 120, 10, 3600),
+            chamber_count=self._get_int_revolver_config("chamber_count", 6, 1, 100),
+            fixed_bullet_count=self._get_int_revolver_config("fixed_bullet_count", 0, 0, 100),
+            no_full_chamber=self._get_bool_config_value("no_full_chamber", False),
+            hide_bullet_count=self._get_bool_config_value("hide_bullet_count", False),
+            end_on_full_rotation=self._get_bool_config_value("end_on_full_rotation", False),
+        )
+
+    def _get_int_revolver_config(
+        self,
+        key: str,
+        default: int,
+        minimum: int,
+        maximum: int,
+    ) -> int:
+        try:
+            value = int(self._get_revolver_config(key, default))
+        except (TypeError, ValueError):
+            return default
+        return max(minimum, min(maximum, value))
 
     def _summarize_api_payload(self, payload) -> str:
         if not isinstance(payload, dict):

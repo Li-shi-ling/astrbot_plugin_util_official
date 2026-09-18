@@ -304,3 +304,12 @@ def test_subai_image_reply_uses_component_list():
     assert len(results) == 1
     assert isinstance(results[0].chain, list)
     assert len(results[0].chain) == 1
+
+
+def test_revolver_helpers_use_group_and_sender_names():
+    module = load_plugin_module()
+    plugin = object.__new__(module.QQOfficialUtilPlugin)
+    event = FakeEvent(module, "开枪")
+
+    assert plugin._extract_revolver_group_id(event) == "group-openid"
+    assert plugin._get_revolver_user_name(event) == "author-member-openid"

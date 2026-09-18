@@ -145,5 +145,48 @@
         "hint": "用于 SubAI 榜单/通知卡片，图片生成或发送失败时会自动回退文字。"
       }
     }
+  },
+  "revolver": {
+    "description": "左轮轮盘赌实验指令配置",
+    "type": "object",
+    "hint": "只实现装填、开枪、状态、帮助、结束游戏等指令玩法；不执行禁言、AI 工具或随机走火。",
+    "items": {
+      "timeout_seconds": {
+        "description": "游戏超时时间（秒）",
+        "type": "int",
+        "default": 120,
+        "hint": "超过该时间没有操作时，下一次指令会自动清理旧局。"
+      },
+      "chamber_count": {
+        "description": "默认弹膛数量",
+        "type": "int",
+        "default": 6,
+        "hint": "随机装填和未指定弹膛数时使用，范围 1-100。"
+      },
+      "fixed_bullet_count": {
+        "description": "固定装弹数量",
+        "type": "int",
+        "default": 0,
+        "hint": "设为 0 时“装填”随机装弹；大于 0 时“装填”使用固定数量。"
+      },
+      "no_full_chamber": {
+        "description": "随机装填时禁止满膛",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后随机装填最多为弹膛数 - 1。"
+      },
+      "hide_bullet_count": {
+        "description": "装填时隐藏子弹数量",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后装填回复中用 ? 代替具体子弹数。"
+      },
+      "end_on_full_rotation": {
+        "description": "弹轮转完一圈后结束",
+        "type": "bool",
+        "default": false,
+        "hint": "关闭时只在子弹打完后结束。"
+      }
+    }
   }
 }
